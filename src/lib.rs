@@ -56,9 +56,7 @@
 //! of source data is a `Vec<u8>` containing the whole filesystem.
 //!
 //! If the `std` feature is enabled, [`Ext4Read`] is implemented for
-//! [`std::fs::File`]. As a shortcut, you can also use
-//! [`Ext4::load_from_path`] to open a path and read the filesystem from
-//! it.
+//! [`std::fs::File`].
 //!
 //! For other cases, implement [`Ext4Read`] for your data source. This
 //! trait has a single method which reads bytes into a byte slice.
@@ -84,8 +82,8 @@
 //! * If the filesystem is corrupt in some way, [`Ext4Error::Corrupt`]
 //!   is returned.
 //! * If the filesystem can't be read due to a limitation of the
-//!   library, [`Ext4Error::Incompatible`] is returned. Please [file a
-//!   bug][issues] if you encounter an incompatibility so we know to
+//!   library, [`Ext4Error::Incompatible`] is returned. Please file a
+//!   bug if you encounter an incompatibility so we know to
 //!   prioritize a fix!
 //!
 //! Some functions list specific errors that may occur. These lists are

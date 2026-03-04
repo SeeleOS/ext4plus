@@ -23,7 +23,7 @@ pub enum FollowSymlinks {
     ///
     /// This is used for `Ext4::symlink_metadata`, which has similar
     /// behavior to `lstat`:
-    /// https://www.man7.org/linux/man-pages/man2/lstat.2.html
+    /// <https://www.man7.org/linux/man-pages/man2/lstat.2.html>
     ExcludeFinalComponent,
 }
 
