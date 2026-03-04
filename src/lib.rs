@@ -250,7 +250,7 @@ impl Ext4 {
         Ok(fs)
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", target_family = "unix"))]
     /// Load an [`Ext4`] instance from a file at the given path.
     pub async fn load_from_path<P: AsRef<std::path::Path>>(
         path: P,
