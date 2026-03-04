@@ -1,5 +1,8 @@
 # Changelog
 
+## [Unreleased]
+* Support writing to block maps when only using direct block pointers
+
 ## 0.1.0-alpha.1
 
 * Initial forked release

@@ -1,4 +1,5 @@
 use crate::Inode;
+use crate::block_index::{FileBlockIndex, FsBlockIndex};
 use crate::util::read_u32le;
 
 pub(crate) struct BlockMap {
@@ -39,5 +40,35 @@ impl BlockMap {
         data[14 * 4..15 * 4]
             .copy_from_slice(&self.triple_indirect_block.to_le_bytes());
         data
+    }
+
+    pub(crate) fn map_block(
+        &self,
+        file_block_index: FileBlockIndex,
+    ) -> FsBlockIndex {
+        if file_block_index < 12 {
+            self.direct_blocks[file_block_index as usize] as u64
+        } else {
+            todo!(
+                "Handle indirect blocks for file block index {}",
+                file_block_index
+            );
+        }
+    }
+
+    pub(crate) fn set_block(
+        &mut self,
+        file_block_index: FileBlockIndex,
+        fs_block_index: FsBlockIndex,
+    ) {
+        if file_block_index < 12 {
+            self.direct_blocks[file_block_index as usize] =
+                fs_block_index as u32;
+        } else {
+            todo!(
+                "Handle indirect blocks for file block index {}",
+                file_block_index
+            );
+        }
     }
 }

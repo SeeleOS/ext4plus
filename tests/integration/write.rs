@@ -26,7 +26,7 @@ async fn test_write_requires_writer() {
 }
 
 #[tokio::test]
-async fn test_write_into_hole_is_error() {
+async fn test_write_into_hole() {
     // Load filesystem with writer.
     let fs = load_test_disk1_rw().await;
 
@@ -34,8 +34,10 @@ async fn test_write_into_hole_is_error() {
     let mut file = fs.open("/holes").await.unwrap();
 
     // Try to write at the start (in a hole). Should be Readonly.
-    let err = file.write_bytes(b"XYZ").await.unwrap_err();
-    assert!(matches!(err, Ext4Error::Readonly));
+    let write = file.write_bytes(b"XYZ").await.unwrap();
+    assert_eq!(write, 3);
+    let data = fs.read("/holes").await.unwrap();
+    assert!(data.starts_with(b"XYZ"));
 }
 
 #[tokio::test]

@@ -267,106 +267,15 @@ impl File {
         &mut self,
         buf: &[u8],
     ) -> Result<usize, Ext4Error> {
-        // Nothing to do if input buffer is empty.
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        let block_size = self.fs.0.superblock.block_size();
-
-        // Special case for writing at position 0 of an empty file
-        if self.inode.size_in_bytes() == 0
-            && self.position == 0
-            && self.inode.flags().contains(InodeFlags::EXTENTS)
-        {
-            let mut tree = file_blocks::extent_tree::ExtentTree::from_inode(
-                self.fs.clone(),
-                &self.inode,
-            )?;
-            tree.extend(
-                0,
-                NonZeroU32::new(
-                    u32::try_from(buf.len().div_ceil(block_size.to_usize()))
-                        .map_err(|_| Ext4Error::NoSpace)?,
-                )
-                .unwrap(),
-            )
-            .await?;
-            for i in 0..buf.len().div_ceil(block_size.to_usize()) as u32 {
-                let block_index = tree.get_block(i).await?.unwrap();
-                let buf_offset = (usize_from_u32(i)) * block_size.to_usize();
-                let to_write = &buf[buf_offset
-                    ..(buf_offset + block_size.to_usize()).min(buf.len())];
-                self.fs.write_to_block(block_index, 0, to_write).await?;
-            }
-            self.inode.set_inline_data(tree.to_bytes());
-            self.inode.set_size_in_bytes(u64_from_usize(buf.len()));
-            self.inode.write(&self.fs).await?;
-            self.file_blocks = FileBlocks::new(self.fs.clone(), &self.inode)?;
-            return Ok(buf.len());
-        }
-
-        // Get the block to write to.
-        let block_index = if let Some(block_index) = self.block_index {
-            block_index
-        } else {
-            let next = self.file_blocks.next().await;
-            match next {
-                Some(res) => {
-                    let block_index = res?;
-                    self.block_index = Some(block_index);
-                    block_index
-                }
-                None => 0,
-            }
-        };
-
-        // Refuse to write into holes or beyond mapped blocks; scope is only allocated blocks.
-        if block_index == 0 {
-            return Err(Ext4Error::Readonly);
-        }
-
-        // Offset within the current block.
-        let offset_within_block: u32 =
-            u32::try_from(self.position % block_size.to_nz_u64()).unwrap();
-
-        // Cap write to remaining bytes in this block.
-        let bytes_remaining_in_block: u32 = block_size
-            .to_u32()
-            .checked_sub(offset_within_block)
-            .unwrap();
-        let mut write_len = buf.len();
-        if write_len > usize_from_u32(bytes_remaining_in_block) {
-            write_len = usize_from_u32(bytes_remaining_in_block);
-        }
-
-        // Perform the write for the capped portion.
-        let to_write = &buf[..write_len];
-        self.fs
-            .write_to_block(block_index, offset_within_block, to_write)
-            .await?;
-
-        // Update position and block iterator state.
-        let new_offset_within_block: u32 = offset_within_block
-            .checked_add(u32::try_from(write_len).unwrap())
-            .unwrap();
-        if new_offset_within_block >= block_size {
-            // Move to next block on subsequent calls.
-            self.block_index = None;
-        }
-        let new_position = self
+        let written =
+            write_at(&self.fs, &mut self.inode, buf, self.position).await?;
+        self.position = self
             .position
-            .checked_add(u64::try_from(write_len).unwrap())
+            .checked_add(u64::try_from(written).unwrap())
             .unwrap();
-        self.position = new_position;
-
-        // If we extended past previous EOF, update inode size without allocating.
-        if new_position > self.inode.size_in_bytes() {
-            self.inode.set_size_in_bytes(new_position);
-            // Persist the inode metadata update.
-            self.inode.write(&self.fs).await?;
-        }
-
-        Ok(write_len)
+        // Update file blocks to reflect any changes from the write (e.g., new blocks allocated, extents split/merged, etc.).
+        self.file_blocks = FileBlocks::new(self.fs.clone(), &self.inode)?;
+        Ok(written)
     }
 
     /// Current position within the file.
@@ -433,6 +342,70 @@ pub async fn read_at(
 /// Write `buf` into `inode` starting at `offset`, returning how many bytes were written.
 /// The number may be smaller than the length of the input buffer if the write is only partially successful (e.g., due to lack of space).
 pub async fn write_at(
+    ext4: &Ext4,
+    inode: &mut Inode,
+    buf: &[u8],
+    offset: u64,
+) -> Result<usize, Ext4Error> {
+    if inode.flags().contains(InodeFlags::EXTENTS) {
+        write_at_extent(ext4, inode, buf, offset).await
+    } else {
+        write_at_block_map(ext4, inode, buf, offset).await
+    }
+}
+
+async fn write_at_block_map(
+    ext4: &Ext4,
+    inode: &mut Inode,
+    buf: &[u8],
+    offset: u64,
+) -> Result<usize, Ext4Error> {
+    let mut block_map = file_blocks::block_map::BlockMap::from_inode(inode);
+    let block_size = ext4.0.superblock.block_size().to_usize();
+    let start_block =
+        FileBlockIndex::try_from(offset / u64_from_usize(block_size)).unwrap();
+    let offset_in_block = (offset % u64_from_usize(block_size)) as usize;
+    let remaining_in_block = block_size - offset_in_block;
+    if remaining_in_block > 0 {
+        let to_write = core::cmp::min(buf.len(), remaining_in_block);
+        let fs_block = match block_map.map_block(start_block) {
+            0 => {
+                // Hole: need to allocate a block.
+                let new_fs_block = ext4.alloc_block(inode.index).await?;
+                block_map.set_block(start_block, new_fs_block);
+                inode.set_inline_data(block_map.to_bytes());
+                inode.write(ext4).await?;
+                new_fs_block
+            }
+            fs_block => fs_block,
+        };
+        ext4.write_to_block(fs_block, offset_in_block as u32, &buf[..to_write])
+            .await?;
+        Ok(to_write)
+    } else {
+        let to_write = core::cmp::min(buf.len(), block_size);
+        let fs_block = match block_map
+            .map_block(start_block.checked_add(1).ok_or(Ext4Error::NoSpace)?)
+        {
+            0 => {
+                // Hole: need to allocate a block.
+                let new_fs_block = ext4.alloc_block(inode.index).await?;
+                block_map.set_block(
+                    start_block.checked_add(1).unwrap(),
+                    new_fs_block,
+                );
+                inode.set_inline_data(block_map.to_bytes());
+                inode.write(ext4).await?;
+                new_fs_block
+            }
+            fs_block => fs_block,
+        };
+        ext4.write_to_block(fs_block, 0, &buf[..to_write]).await?;
+        Ok(to_write)
+    }
+}
+
+async fn write_at_extent(
     ext4: &Ext4,
     inode: &mut Inode,
     buf: &[u8],

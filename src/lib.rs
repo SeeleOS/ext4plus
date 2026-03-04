@@ -632,7 +632,6 @@ impl Ext4 {
         Ok(())
     }
 
-    #[expect(unused)]
     pub(crate) async fn alloc_block(
         &self,
         inode_index: InodeIndex,

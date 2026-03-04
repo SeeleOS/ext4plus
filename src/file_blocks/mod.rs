@@ -5,7 +5,7 @@ use crate::{Ext4, Ext4Error, Inode, InodeFlags};
 use crate::block_index::{FileBlockIndex, FsBlockIndex};
 use alloc::vec::Vec;
 
-mod block_map;
+pub(crate) mod block_map;
 pub(crate) mod extent_tree;
 
 pub(crate) enum FileBlocks {
