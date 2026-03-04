@@ -1059,9 +1059,8 @@ impl ExtentTree {
         }
 
         // `node` is now the leaf node that should contain the extent.
-        let leaf_block = node
-            .block
-            .ok_or(CorruptKind::ExtentBlock(self.inode))?;
+        let leaf_block =
+            node.block.ok_or(CorruptKind::ExtentBlock(self.inode))?;
 
         let old_first = match &node.entries {
             ExtentNodeEntries::Leaf(extents) => extents.first().copied(),

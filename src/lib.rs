@@ -714,9 +714,7 @@ impl Ext4 {
                     continue;
                 };
                 for i in 0..num_blocks.get() {
-                    block_bitmap_handle
-                        .set(block_num + i, true, self)
-                        .await?;
+                    block_bitmap_handle.set(block_num + i, true, self).await?;
                 }
                 self.update_block_bitmap_checksum(bg_id, block_bitmap_handle)
                     .await?;
