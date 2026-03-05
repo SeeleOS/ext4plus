@@ -50,12 +50,12 @@ impl FileBlocks {
     pub(crate) async fn get_block(
         &self,
         block_index: FileBlockIndex,
-    ) -> Result<Option<FsBlockIndex>, Ext4Error> {
+    ) -> Result<FsBlockIndex, Ext4Error> {
         match self {
             Self::ExtentTree(extent_tree) => {
                 extent_tree.get_block(block_index).await
             }
-            Self::BlockMap(block_map) => todo!(),
+            Self::BlockMap(block_map) => block_map.get_block(block_index),
         }
     }
 }

@@ -368,7 +368,7 @@ async fn write_at_block_map(
     let remaining_in_block = block_size - offset_in_block;
     if remaining_in_block > 0 {
         let to_write = core::cmp::min(buf.len(), remaining_in_block);
-        let fs_block = match block_map.map_block(start_block) {
+        let fs_block = match block_map.get_block(start_block)? {
             0 => {
                 // Hole: need to allocate a block.
                 let new_fs_block = ext4.alloc_block(inode.index).await?;
@@ -385,7 +385,7 @@ async fn write_at_block_map(
     } else {
         let to_write = core::cmp::min(buf.len(), block_size);
         let fs_block = match block_map
-            .map_block(start_block.checked_add(1).ok_or(Ext4Error::NoSpace)?)
+            .get_block(start_block.checked_add(1).ok_or(Ext4Error::NoSpace)?)?
         {
             0 => {
                 // Hole: need to allocate a block.

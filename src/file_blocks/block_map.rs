@@ -1,6 +1,6 @@
-use crate::Inode;
 use crate::block_index::{FileBlockIndex, FsBlockIndex};
 use crate::util::{read_u32le, usize_from_u32};
+use crate::{Ext4Error, Inode};
 
 const DIRECT_BLOCKS: usize = 12;
 
@@ -53,12 +53,12 @@ impl BlockMap {
         data
     }
 
-    pub(crate) fn map_block(
+    pub(crate) fn get_block(
         &self,
         file_block_index: FileBlockIndex,
-    ) -> FsBlockIndex {
+    ) -> Result<FsBlockIndex, Ext4Error> {
         if usize_from_u32(file_block_index) < DIRECT_BLOCKS {
-            self.direct_blocks[file_block_index as usize] as u64
+            Ok(self.direct_blocks[file_block_index as usize] as u64)
         } else {
             todo!(
                 "Handle indirect blocks for file block index {}",

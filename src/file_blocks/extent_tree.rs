@@ -400,14 +400,12 @@ impl ExtentTree {
     pub(crate) async fn get_block(
         &self,
         block_index: FileBlockIndex,
-    ) -> Result<Option<FsBlockIndex>, Ext4Error> {
+    ) -> Result<FsBlockIndex, Ext4Error> {
         if let Some(extent) = self.find_extent(block_index).await? {
             let offset_within_extent = block_index - extent.block_within_file;
-            Ok(Some(
-                extent.start_block + FsBlockIndex::from(offset_within_extent),
-            ))
+            Ok(extent.start_block + FsBlockIndex::from(offset_within_extent))
         } else {
-            Ok(None)
+            Ok(0)
         }
     }
 
