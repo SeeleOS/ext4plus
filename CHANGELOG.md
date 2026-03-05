@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+
+## 0.1.0-alpha.2
+
 * Support writing to block maps when only using direct block pointers
 * Support creating inodes with the `extents` feature disabled
 * No hidden panics due to as conversions or arithmetic overflow, these are now findable by searching for `unwrap` or `expect`.
