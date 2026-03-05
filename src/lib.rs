@@ -350,8 +350,11 @@ impl Ext4 {
         self.0
             .reader
             .read(
-                block_index * self.0.superblock.block_size().to_u64()
-                    + u64::from(offset_within_block),
+                block_index
+                    .checked_mul(self.0.superblock.block_size().to_u64())
+                    .unwrap()
+                    .checked_add(u64::from(offset_within_block))
+                    .unwrap(),
                 dst,
             )
             .await
@@ -418,8 +421,11 @@ impl Ext4 {
         if let Some(writer) = &self.0.writer {
             writer
                 .write(
-                    block_index * self.0.superblock.block_size().to_u64()
-                        + u64::from(offset_within_block),
+                    block_index
+                        .checked_mul(self.0.superblock.block_size().to_u64())
+                        .unwrap()
+                        .checked_add(u64::from(offset_within_block))
+                        .unwrap(),
                     src,
                 )
                 .await
@@ -541,9 +547,17 @@ impl Ext4 {
 
                 return Ok(InodeIndex::try_from(
                     inode_num
-                        + self.0.superblock.inodes_per_block_group().get()
-                            * bg_id
-                        + 1,
+                        .checked_add(
+                            self.0
+                                .superblock
+                                .inodes_per_block_group()
+                                .get()
+                                .checked_mul(bg_id)
+                                .unwrap(),
+                        )
+                        .unwrap()
+                        .checked_add(1)
+                        .unwrap(),
                 )
                 .unwrap());
             }
@@ -668,10 +682,14 @@ impl Ext4 {
                 bg.write(self).await?;
 
                 // Zero out the new block
-                let block_index = (u64::from(bg_id)
-                    * NonZeroU64::from(self.0.superblock.blocks_per_group())
-                        .get())
-                    + u64::from(block_num);
+                let block_index = u64::from(bg_id)
+                    .checked_mul(
+                        NonZeroU64::from(self.0.superblock.blocks_per_group())
+                            .get(),
+                    )
+                    .unwrap()
+                    .checked_add(u64::from(block_num))
+                    .unwrap();
 
                 return Ok(block_index);
             }
@@ -716,7 +734,9 @@ impl Ext4 {
                     continue;
                 };
                 for i in 0..num_blocks.get() {
-                    block_bitmap_handle.set(block_num + i, true, self).await?;
+                    block_bitmap_handle
+                        .set(block_num.checked_add(i).unwrap(), true, self)
+                        .await?;
                 }
                 self.update_block_bitmap_checksum(bg_id, block_bitmap_handle)
                     .await?;
@@ -773,8 +793,12 @@ impl Ext4 {
     ) -> Result<(), Ext4Error> {
         let zeroes = vec![0; self.0.superblock.block_size().to_usize()];
         for i in 0..num_blocks.get() {
-            self.write_to_block(block_index + u64::from(i), 0, &zeroes)
-                .await?;
+            self.write_to_block(
+                block_index.checked_add(u64::from(i)).unwrap(),
+                0,
+                &zeroes,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -816,7 +840,7 @@ impl Ext4 {
             self.get_block_bitmap_handle(block_group_index);
         for i in 0..num_blocks.get() {
             block_bitmap_handle
-                .set(block_offset + i, false, self)
+                .set(block_offset.checked_add(i).unwrap(), false, self)
                 .await?;
         }
         self.update_block_bitmap_checksum(
