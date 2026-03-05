@@ -3,7 +3,7 @@
 ## [Unreleased]
 * Support writing to block maps when only using direct block pointers
 * Support creating inodes with the `extents` feature disabled
-* Green CI (no hidden panics)
+* No hidden panics due to as conversions or arithmetic overflow, these are now findable by searching for `unwrap` or `expect`.
 
 ## 0.1.0-alpha.1
 
