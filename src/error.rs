@@ -324,6 +324,9 @@ pub(crate) enum CorruptKind {
     /// An extent points to an invalid block.
     ExtentBlock(InodeIndex),
 
+    /// A block in the extent is larger than 48 bits
+    ExtentBlockOverflow(u64),
+
     /// An extent node's size exceeds the block size.
     ExtentNodeSize(InodeIndex),
 
@@ -507,6 +510,9 @@ impl Display for CorruptKind {
             }
             Self::ExtentBlock(inode) => {
                 write!(f, "extent in inode {inode} points to an invalid block")
+            }
+            Self::ExtentBlockOverflow(block) => {
+                write!(f, "extent block {block} is larger than 48 bits")
             }
             Self::ExtentNodeSize(inode) => {
                 write!(

@@ -6,7 +6,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use crate::Ext4Error;
 use crate::block_index::{FileBlockIndex, FsBlockIndex};
+use crate::error::CorruptKind;
 use crate::util::{read_u16le, read_u32le, u64_from_hilo, u64_to_hilo};
 
 /// Contiguous range of blocks that contain file data.
@@ -52,7 +54,7 @@ impl Extent {
         Self::new(ee_block, start_block, ee_len)
     }
 
-    pub(crate) fn to_bytes(self) -> [u8; 12] {
+    pub(crate) fn to_bytes(self) -> Result<[u8; 12], Ext4Error> {
         let mut bytes = [0u8; 12];
         bytes[0..4].copy_from_slice(&self.block_within_file.to_le_bytes());
         // ee_len
@@ -64,9 +66,9 @@ impl Extent {
         bytes[4..6].copy_from_slice(&ee_len.to_le_bytes());
         let (ee_start_hi, ee_start_low) = u64_to_hilo(self.start_block);
         let ee_start_hi = u16::try_from(ee_start_hi)
-            .expect("start_block must fit in 48 bits");
+            .map_err(|_| CorruptKind::ExtentBlockOverflow(self.start_block))?;
         bytes[6..8].copy_from_slice(&ee_start_hi.to_le_bytes());
         bytes[8..12].copy_from_slice(&ee_start_low.to_le_bytes());
-        bytes
+        Ok(bytes)
     }
 }

@@ -870,7 +870,7 @@ async fn write_at_extent(
         inode.size_in_bytes(),
         offset.checked_add(u64_from_usize(total_written)).unwrap(),
     ));
-    inode.set_inline_data(extent_tree.to_bytes());
+    inode.set_inline_data(extent_tree.to_bytes()?);
     inode.write(ext4).await?;
 
     Ok(total_written)

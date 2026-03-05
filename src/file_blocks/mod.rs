@@ -40,10 +40,10 @@ impl FileBlocks {
         }
     }
 
-    pub(crate) fn to_bytes(&self) -> [u8; 60] {
+    pub(crate) fn to_bytes(&self) -> Result<[u8; 60], Ext4Error> {
         match self {
             Self::ExtentTree(extent_tree) => extent_tree.to_bytes(),
-            Self::BlockMap(block_map) => block_map.to_bytes(),
+            Self::BlockMap(block_map) => Ok(block_map.to_bytes()),
         }
     }
 

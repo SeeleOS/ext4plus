@@ -240,7 +240,10 @@ impl ExtentNode {
         })
     }
 
-    pub(crate) fn to_bytes(&self, checksum_base: Option<Checksum>) -> Vec<u8> {
+    pub(crate) fn to_bytes(
+        &self,
+        checksum_base: Option<Checksum>,
+    ) -> Result<Vec<u8>, Ext4Error> {
         let mut bytes = Vec::with_capacity(
             self.header.checksum_offset().checked_add(4).unwrap(),
         );
@@ -248,7 +251,7 @@ impl ExtentNode {
         match &self.entries {
             ExtentNodeEntries::Leaf(extents) => {
                 for extent in extents {
-                    bytes.extend_from_slice(&extent.to_bytes());
+                    bytes.extend_from_slice(&extent.to_bytes()?);
                 }
             }
             ExtentNodeEntries::Internal(internal_nodes) => {
@@ -262,7 +265,7 @@ impl ExtentNode {
             checksum.update(&bytes);
             bytes.extend_from_slice(&checksum.finalize().to_le_bytes());
         }
-        bytes
+        Ok(bytes)
     }
 
     pub(crate) fn push_extent(&mut self, extent: Extent) -> Result<(), ()> {
@@ -284,7 +287,7 @@ impl ExtentNode {
 
     pub(crate) async fn write(&self, ext4: &Ext4) -> Result<(), Ext4Error> {
         if let Some(block) = self.block {
-            let bytes = self.to_bytes(None);
+            let bytes = self.to_bytes(None)?;
             ext4.write_to_block(block, 0, &bytes).await?;
         }
         Ok(())
@@ -322,11 +325,11 @@ impl ExtentTree {
         })
     }
 
-    pub(crate) fn to_bytes(&self) -> [u8; 60] {
-        let bytes = self.node.to_bytes(None);
+    pub(crate) fn to_bytes(&self) -> Result<[u8; 60], Ext4Error> {
+        let bytes = self.node.to_bytes(None)?;
         let mut result = [0u8; 60];
         result[..bytes.len()].copy_from_slice(&bytes);
-        result
+        Ok(result)
     }
 
     pub(crate) fn from_inode(
