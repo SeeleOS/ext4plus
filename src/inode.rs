@@ -356,7 +356,11 @@ impl Inode {
         let (block_index, offset_within_block) =
             get_inode_location(ext4, self.index)?;
         let block_size = ext4.0.superblock.block_size().to_u64();
-        let pos = block_index * block_size + u64::from(offset_within_block);
+        let pos = block_index
+            .checked_mul(block_size)
+            .unwrap()
+            .checked_add(u64::from(offset_within_block))
+            .unwrap();
         self.update_inode_data(ext4);
         // Write only the data we've saved to avoid overwriting any unread info
         let writer = ext4.0.writer.as_ref().ok_or(Ext4Error::Readonly)?;
