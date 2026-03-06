@@ -304,8 +304,8 @@ pub(crate) struct ExtentTree {
 
 impl ExtentTree {
     pub(crate) fn initialize(
-        ext4: Ext4,
         inode: &Inode,
+        ext4: Ext4,
     ) -> Result<Self, Ext4Error> {
         // TODO: linux claims some initial blocks for the extent tree
         Ok(Self {
@@ -333,8 +333,8 @@ impl ExtentTree {
     }
 
     pub(crate) fn from_inode(
-        ext4: Ext4,
         inode: &Inode,
+        ext4: Ext4,
     ) -> Result<Self, Ext4Error> {
         let header = NodeHeader::from_bytes(&inode.inline_data(), inode.index)?;
         let entries = ExtentNodeEntries::from_bytes(

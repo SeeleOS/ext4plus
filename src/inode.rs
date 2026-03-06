@@ -269,7 +269,7 @@ impl Inode {
             flags &= !InodeFlags::EXTENTS;
         }
         inode.set_flags(flags);
-        let blocks = FileBlocks::initialize(ext4.clone(), &inode)?;
+        let blocks = FileBlocks::initialize(&inode, ext4.clone())?;
         let inline_data = blocks.to_bytes()?;
         inode.set_inline_data(inline_data);
         inode.write(ext4).await?;

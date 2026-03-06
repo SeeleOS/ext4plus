@@ -14,12 +14,12 @@ pub(crate) enum FileBlocks {
 
 impl FileBlocks {
     pub(crate) fn initialize(
-        ext4: Ext4,
         inode: &Inode,
+        ext4: Ext4,
     ) -> Result<Self, Ext4Error> {
         if inode.flags().contains(InodeFlags::EXTENTS) {
             Ok(Self::ExtentTree(extent_tree::ExtentTree::initialize(
-                ext4, inode,
+                inode, ext4
             )?))
         } else {
             Ok(Self::BlockMap(block_map::BlockMap::initialize()))
@@ -27,12 +27,12 @@ impl FileBlocks {
     }
 
     pub(crate) fn from_inode(
-        ext4: Ext4,
         inode: &Inode,
+        ext4: Ext4,
     ) -> Result<Self, Ext4Error> {
         if inode.flags().contains(InodeFlags::EXTENTS) {
             Ok(Self::ExtentTree(extent_tree::ExtentTree::from_inode(
-                ext4, inode,
+                inode, ext4
             )?))
         } else {
             Ok(Self::BlockMap(block_map::BlockMap::from_inode(inode)))

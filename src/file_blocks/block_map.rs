@@ -2,6 +2,8 @@ use crate::block_index::{FileBlockIndex, FsBlockIndex};
 use crate::util::{read_u32le, usize_from_u32};
 use crate::{Ext4Error, Inode};
 
+use alloc::vec::Vec;
+
 const DIRECT_BLOCKS: usize = 12;
 
 pub(crate) struct BlockMap {
@@ -123,9 +125,7 @@ impl BlockMap {
         &mut self,
         start: FileBlockIndex,
         count: u32,
-    ) -> Result<alloc::vec::Vec<FsBlockIndex>, Ext4Error> {
-        use alloc::vec::Vec;
-
+    ) -> Result<Vec<FsBlockIndex>, Ext4Error> {
         if count == 0 {
             return Ok(Vec::new());
         }

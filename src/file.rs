@@ -606,7 +606,7 @@ async fn write_at_extent(
     let mut current_block = start_block;
     let mut total_written = 0usize;
     let mut extent_tree =
-        file_blocks::extent_tree::ExtentTree::from_inode(ext4.clone(), inode)?;
+        file_blocks::extent_tree::ExtentTree::from_inode(inode, ext4.clone())?;
 
     while bytes_remaining > 0 {
         let opt_extent = extent_tree.find_extent(current_block).await?;
@@ -851,8 +851,8 @@ pub async fn truncate(
             if inode.flags().contains(InodeFlags::EXTENTS) {
                 let mut extent_tree =
                     file_blocks::extent_tree::ExtentTree::from_inode(
-                        ext4.clone(),
                         inode,
+                        ext4.clone(),
                     )?;
                 let freed = extent_tree
                     .remove_extent_range(drop_from, drop_count)
