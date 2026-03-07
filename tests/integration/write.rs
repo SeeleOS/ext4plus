@@ -97,69 +97,73 @@ async fn test_write_persists_data() {
 
 #[tokio::test]
 async fn test_inode_modification_time() {
-    let fs = load_test_disk1_rw().await;
-
-    let mut inode = fs
-        .path_to_inode(
-            Path::try_from("/empty_file").unwrap(),
-            FollowSymlinks::All,
-        )
-        .await
-        .unwrap();
-    let new_atime = core::time::Duration::new(6000, 0);
-    let now = core::time::Duration::new(5000, 0);
-    inode.set_atime(new_atime);
-    inode.set_mtime(now);
-    inode.write(&fs).await.unwrap();
-    // Reload inode to verify change persisted.
-    let reloaded = fs
-        .path_to_inode(
-            Path::try_from("/empty_file").unwrap(),
-            FollowSymlinks::All,
-        )
-        .await
-        .unwrap();
-    assert_eq!(reloaded.metadata().mtime, now);
-    assert_eq!(reloaded.metadata().atime, new_atime);
+    let fses = [load_test_disk1_rw().await, load_ext2_rw().await];
+    for fs in fses {
+        let mut inode = fs
+            .path_to_inode(
+                Path::try_from("/small_file").unwrap(),
+                FollowSymlinks::All,
+            )
+            .await
+            .unwrap();
+        let new_atime = core::time::Duration::new(6000, 0);
+        let now = core::time::Duration::new(5000, 0);
+        inode.set_atime(new_atime);
+        inode.set_mtime(now);
+        inode.write(&fs).await.unwrap();
+        // Reload inode to verify change persisted.
+        let reloaded = fs
+            .path_to_inode(
+                Path::try_from("/small_file").unwrap(),
+                FollowSymlinks::All,
+            )
+            .await
+            .unwrap();
+        assert_eq!(reloaded.metadata().mtime, now);
+        assert_eq!(reloaded.metadata().atime, new_atime);
+    }
 }
 
 #[tokio::test]
 async fn test_inode_creation() {
-    let fs = load_test_disk1_rw().await;
-
-    // Create a new file in the root directory.
-    let mut new_inode = fs
-        .create_inode(InodeCreationOptions {
-            file_type: FileType::Regular,
-            mode: InodeMode::S_IRUSR | InodeMode::S_IWUSR | InodeMode::S_IFREG,
-            uid: 0,
-            gid: 0,
-            time: Default::default(),
-            flags: InodeFlags::INLINE_DATA,
-        })
-        .await
-        .unwrap();
-    assert_eq!(new_inode.metadata().file_type, FileType::Regular);
-    assert_eq!(
-        new_inode.metadata().mode,
-        InodeMode::S_IRUSR | InodeMode::S_IWUSR | InodeMode::S_IFREG
-    );
-    assert_eq!(new_inode.metadata().uid, 0);
-    assert_eq!(new_inode.metadata().gid, 0);
-    let root_inode = fs.read_root_inode().await.unwrap();
-    let root_dir = Dir::open(fs.0.clone(), root_inode).await.unwrap();
-    // Link the new inode into the root directory.
-    root_dir
-        .link(DirEntryName::try_from(b"new_file").unwrap(), &mut new_inode)
-        .await
-        .unwrap();
-    // Ensure the new file is visible at the expected path.
-    let new_file_inode = fs
-        .path_to_inode("/new_file".try_into().unwrap(), FollowSymlinks::All)
-        .await
-        .unwrap();
-    assert_eq!(new_file_inode.index, new_inode.index);
-    assert_eq!(new_file_inode.links_count(), 1);
+    let fses = [load_test_disk1_rw().await, load_ext2_rw().await];
+    for fs in fses {
+        // Create a new file in the root directory.
+        let mut new_inode = fs
+            .create_inode(InodeCreationOptions {
+                file_type: FileType::Regular,
+                mode: InodeMode::S_IRUSR
+                    | InodeMode::S_IWUSR
+                    | InodeMode::S_IFREG,
+                uid: 0,
+                gid: 0,
+                time: Default::default(),
+                flags: InodeFlags::INLINE_DATA,
+            })
+            .await
+            .unwrap();
+        assert_eq!(new_inode.metadata().file_type, FileType::Regular);
+        assert_eq!(
+            new_inode.metadata().mode,
+            InodeMode::S_IRUSR | InodeMode::S_IWUSR | InodeMode::S_IFREG
+        );
+        assert_eq!(new_inode.metadata().uid, 0);
+        assert_eq!(new_inode.metadata().gid, 0);
+        let root_inode = fs.read_root_inode().await.unwrap();
+        let root_dir = Dir::open(fs.0.clone(), root_inode).await.unwrap();
+        // Link the new inode into the root directory.
+        root_dir
+            .link(DirEntryName::try_from(b"new_file").unwrap(), &mut new_inode)
+            .await
+            .unwrap();
+        // Ensure the new file is visible at the expected path.
+        let new_file_inode = fs
+            .path_to_inode("/new_file".try_into().unwrap(), FollowSymlinks::All)
+            .await
+            .unwrap();
+        assert_eq!(new_file_inode.index, new_inode.index);
+        assert_eq!(new_file_inode.links_count(), 1);
+    }
 }
 
 #[tokio::test]
@@ -190,89 +194,106 @@ async fn test_inode_deletion() {
 
 #[tokio::test]
 async fn test_new_file_grow() {
-    let fs = load_test_disk1_rw().await;
-    let new_inode = fs
-        .create_inode(InodeCreationOptions {
-            file_type: FileType::Regular,
-            mode: InodeMode::S_IRUSR | InodeMode::S_IWUSR | InodeMode::S_IFREG,
-            uid: 0,
-            gid: 0,
-            time: Default::default(),
-            flags: InodeFlags::INLINE_DATA,
-        })
-        .await
-        .unwrap();
-    let index = new_inode.index;
-    let mut file = File::open_inode(&fs, new_inode).unwrap();
-    let data = b"Hello, world! This file will grow as we write to it.";
-    let n = file.write_bytes(data).await.unwrap();
-    assert_eq!(n, data.len());
-    // Read back the inode and verify new length.
-    let inode = Inode::read(&fs, index).await.unwrap();
-    assert_eq!(inode.size_in_bytes(), data.len() as u64);
-    let mut file = File::open_inode(&fs, inode).unwrap();
-    let mut buf = vec![0u8; data.len()];
-    let n = file.read_bytes(&mut buf).await.unwrap();
-    assert_eq!(n, data.len());
-    assert_eq!(&buf, data);
+    let fses = [load_test_disk1_rw().await, load_ext2_rw().await];
+    for fs in fses {
+        let new_inode = fs
+            .create_inode(InodeCreationOptions {
+                file_type: FileType::Regular,
+                mode: InodeMode::S_IRUSR
+                    | InodeMode::S_IWUSR
+                    | InodeMode::S_IFREG,
+                uid: 0,
+                gid: 0,
+                time: Default::default(),
+                flags: InodeFlags::INLINE_DATA,
+            })
+            .await
+            .unwrap();
+        let index = new_inode.index;
+        let mut file = File::open_inode(&fs, new_inode).unwrap();
+        let data = b"Hello, world! This file will grow as we write to it.";
+        let n = file.write_bytes(data).await.unwrap();
+        assert_eq!(n, data.len());
+        // Read back the inode and verify new length.
+        let inode = Inode::read(&fs, index).await.unwrap();
+        assert_eq!(inode.size_in_bytes(), data.len() as u64);
+        let mut file = File::open_inode(&fs, inode).unwrap();
+        let mut buf = vec![0u8; data.len()];
+        let n = file.read_bytes(&mut buf).await.unwrap();
+        assert_eq!(n, data.len());
+        assert_eq!(&buf, data);
+    }
 }
 
 #[tokio::test]
 async fn test_new_file_grow2() {
-    let fs = load_test_disk1_rw().await;
-    let mut new_inode = fs
-        .create_inode(InodeCreationOptions {
-            file_type: FileType::Regular,
-            mode: InodeMode::S_IRUSR | InodeMode::S_IWUSR | InodeMode::S_IFREG,
-            uid: 0,
-            gid: 0,
-            time: Default::default(),
-            flags: InodeFlags::INLINE_DATA,
-        })
-        .await
-        .unwrap();
-    let index = new_inode.index;
-    let data = b"Hello, world! This file will grow as we write to it.";
-    let _ = write_at(&fs, &mut new_inode, data, 0).await.unwrap();
-    let data = b"Hello, world! This file will grow as we write to it.";
-    let n = write_at(&fs, &mut new_inode, data, 0).await.unwrap();
-    assert_eq!(n, data.len());
-    let replacement_data = b" and can also be appended to.";
-    let n =
-        write_at(&fs, &mut new_inode, replacement_data, data.len() as u64 - 1)
+    let fses = [load_test_disk1_rw().await, load_ext2_rw().await];
+    for fs in fses {
+        let mut new_inode = fs
+            .create_inode(InodeCreationOptions {
+                file_type: FileType::Regular,
+                mode: InodeMode::S_IRUSR
+                    | InodeMode::S_IWUSR
+                    | InodeMode::S_IFREG,
+                uid: 0,
+                gid: 0,
+                time: Default::default(),
+                flags: InodeFlags::INLINE_DATA,
+            })
             .await
             .unwrap();
-    assert_eq!(n, replacement_data.len());
-    // Read back the inode and verify new length.
-    let data = b"Hello, world! This file will grow as we write to it and can also be appended to.";
-    let inode = Inode::read(&fs, index).await.unwrap();
-    assert_eq!(inode.size_in_bytes(), data.len() as u64);
-    let mut file = File::open_inode(&fs, inode).unwrap();
-    let mut buf = vec![0u8; data.len()];
-    let n = file.read_bytes(&mut buf).await.unwrap();
-    assert_eq!(n, data.len());
-    assert_eq!(&buf, data);
+        let index = new_inode.index;
+        let data = b"Hello, world! This file will grow as we write to it.";
+        let _ = write_at(&fs, &mut new_inode, data, 0).await.unwrap();
+        let data = b"Hello, world! This file will grow as we write to it.";
+        let n = write_at(&fs, &mut new_inode, data, 0).await.unwrap();
+        assert_eq!(n, data.len());
+        let replacement_data = b" and can also be appended to.";
+        let n = write_at(
+            &fs,
+            &mut new_inode,
+            replacement_data,
+            data.len() as u64 - 1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(n, replacement_data.len());
+        // Read back the inode and verify new length.
+        let data = b"Hello, world! This file will grow as we write to it and can also be appended to.";
+        let inode = Inode::read(&fs, index).await.unwrap();
+        assert_eq!(inode.size_in_bytes(), data.len() as u64);
+        let mut file = File::open_inode(&fs, inode).unwrap();
+        let mut buf = vec![0u8; data.len()];
+        let n = file.read_bytes(&mut buf).await.unwrap();
+        assert_eq!(n, data.len());
+        assert_eq!(&buf, data);
+    }
 }
 
 #[tokio::test]
 async fn test_existing_file_grow() {
-    let fs = load_test_disk1_rw().await;
-    let mut inode = fs
-        .path_to_inode("/small_file".try_into().unwrap(), FollowSymlinks::All)
-        .await
-        .unwrap();
-    write_at(&fs, &mut inode, b" Adding more data to the small file.", 13)
-        .await
-        .unwrap();
-    let data = b"hello, world! Adding more data to the small file.";
-    // Read back the inode and verify new length.
-    let inode = Inode::read(&fs, inode.index).await.unwrap();
-    assert_eq!(inode.size_in_bytes(), data.len() as u64);
-    let mut file = File::open_inode(&fs, inode).unwrap();
-    let mut buf = vec![0u8; data.len()];
-    let n = file.read_bytes(&mut buf).await.unwrap();
-    assert_eq!(n, data.len());
-    assert_eq!(&buf, data);
+    let fses = [load_test_disk1_rw().await, load_ext2_rw().await];
+    for fs in fses {
+        let mut inode = fs
+            .path_to_inode(
+                "/small_file".try_into().unwrap(),
+                FollowSymlinks::All,
+            )
+            .await
+            .unwrap();
+        write_at(&fs, &mut inode, b" Adding more data to the small file.", 13)
+            .await
+            .unwrap();
+        let data = b"hello, world! Adding more data to the small file.";
+        // Read back the inode and verify new length.
+        let inode = Inode::read(&fs, inode.index).await.unwrap();
+        assert_eq!(inode.size_in_bytes(), data.len() as u64);
+        let mut file = File::open_inode(&fs, inode).unwrap();
+        let mut buf = vec![0u8; data.len()];
+        let n = file.read_bytes(&mut buf).await.unwrap();
+        assert_eq!(n, data.len());
+        assert_eq!(&buf, data);
+    }
 }
 
 #[tokio::test]
@@ -280,7 +301,10 @@ async fn test_multi_block_write() {
     let fses = [load_test_disk1_rw().await, load_ext2_rw().await];
     for fs in fses {
         let mut inode = fs
-            .path_to_inode("/small_file".try_into().unwrap(), FollowSymlinks::All)
+            .path_to_inode(
+                "/small_file".try_into().unwrap(),
+                FollowSymlinks::All,
+            )
             .await
             .unwrap();
         let data = vec![b'A'; 10000];
@@ -292,8 +316,8 @@ async fn test_multi_block_write() {
                 &data[total_written..],
                 total_written as u64,
             )
-                .await
-                .unwrap();
+            .await
+            .unwrap();
             assert!(n > 0);
             total_written += n;
         }

@@ -316,7 +316,9 @@ async fn write_at_block_map(
         block_size.to_usize().checked_sub(offset_in_block).unwrap();
     if remaining_in_block > 0 {
         let to_write = core::cmp::min(buf.len(), remaining_in_block);
-        let new_size = offset.checked_add(u64_from_usize(to_write)).ok_or(Ext4Error::FileTooLarge)?;
+        let new_size = offset
+            .checked_add(u64_from_usize(to_write))
+            .ok_or(Ext4Error::FileTooLarge)?;
         let fs_block = match block_map.get_block(start_block)? {
             0 => {
                 // Hole: need to allocate a block.
@@ -341,7 +343,9 @@ async fn write_at_block_map(
         Ok(to_write)
     } else {
         let to_write = core::cmp::min(buf.len(), block_size.to_usize());
-        let new_size = offset.checked_add(u64_from_usize(to_write)).ok_or(Ext4Error::FileTooLarge)?;
+        let new_size = offset
+            .checked_add(u64_from_usize(to_write))
+            .ok_or(Ext4Error::FileTooLarge)?;
         let fs_block = match block_map
             .get_block(start_block.checked_add(1).ok_or(Ext4Error::NoSpace)?)?
         {
