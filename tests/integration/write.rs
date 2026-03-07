@@ -314,59 +314,65 @@ async fn test_multi_block_write() {
 
 #[tokio::test]
 async fn test_init_directory_creates_dot_and_dotdot() {
-    let fs = load_test_disk1_rw().await;
-    let root_dir = Dir::open(fs.0.clone(), fs.read_root_inode().await.unwrap())
-        .await
-        .unwrap();
+    let fses = [load_test_disk1_rw().await];
+    for fs in fses {
+        let root_dir =
+            Dir::open(fs.0.clone(), fs.read_root_inode().await.unwrap())
+                .await
+                .unwrap();
 
-    // Create a new directory inode and initialize it.
-    let dir_inode = fs
-        .create_inode(InodeCreationOptions {
-            file_type: FileType::Directory,
-            mode: InodeMode::S_IRUSR
-                | InodeMode::S_IWUSR
-                | InodeMode::S_IXUSR
-                | InodeMode::S_IFDIR,
-            uid: 0,
-            gid: 0,
-            time: Default::default(),
-            flags: InodeFlags::empty(),
-        })
-        .await
-        .unwrap();
-
-    let mut dir_inode =
-        Dir::init(fs.clone(), dir_inode, root_dir.as_ref().index)
+        // Create a new directory inode and initialize it.
+        let dir_inode = fs
+            .create_inode(InodeCreationOptions {
+                file_type: FileType::Directory,
+                mode: InodeMode::S_IRUSR
+                    | InodeMode::S_IWUSR
+                    | InodeMode::S_IXUSR
+                    | InodeMode::S_IFDIR,
+                uid: 0,
+                gid: 0,
+                time: Default::default(),
+                flags: InodeFlags::empty(),
+            })
             .await
             .unwrap();
 
-    // Link it into the root so it becomes reachable via path resolution.
-    root_dir
-        .link(
-            DirEntryName::try_from(b"new_dir").unwrap(),
-            dir_inode.as_mut(),
-        )
-        .await
-        .unwrap();
+        let mut dir_inode =
+            Dir::init(fs.clone(), dir_inode, root_dir.as_ref().index)
+                .await
+                .unwrap();
 
-    // Open the directory and verify '.' and '..'.
-    let opened = fs.open(Path::new("/new_dir")).await.unwrap();
+        // Link it into the root so it becomes reachable via path resolution.
+        root_dir
+            .link(
+                DirEntryName::try_from(b"new_dir").unwrap(),
+                dir_inode.as_mut(),
+            )
+            .await
+            .unwrap();
 
-    let dot = dir_inode
-        .get_entry(DirEntryName::try_from(".").unwrap())
-        .await
-        .unwrap();
-    assert_eq!(dot.index, opened.inode().index);
+        // Open the directory and verify '.' and '..'.
+        let opened = fs
+            .path_to_inode(Path::new("/new_dir"), FollowSymlinks::All)
+            .await
+            .unwrap();
 
-    let dotdot = dir_inode
-        .get_entry(DirEntryName::try_from("..").unwrap())
-        .await
-        .unwrap();
-    assert_eq!(dotdot.index, root_dir.as_ref().index);
-    for i in dir_inode.read_dir().unwrap().collect().await {
-        i.unwrap();
+        let dot = dir_inode
+            .get_entry(DirEntryName::try_from(".").unwrap())
+            .await
+            .unwrap();
+        assert_eq!(dot.index, opened.index);
+
+        let dotdot = dir_inode
+            .get_entry(DirEntryName::try_from("..").unwrap())
+            .await
+            .unwrap();
+        assert_eq!(dotdot.index, root_dir.as_ref().index);
+        for i in dir_inode.read_dir().unwrap().collect().await {
+            i.unwrap();
+        }
+        assert_eq!(dir_inode.read_dir().unwrap().collect().await.len(), 2);
     }
-    assert_eq!(dir_inode.read_dir().unwrap().collect().await.len(), 2);
 }
 
 #[tokio::test]

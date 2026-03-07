@@ -44,6 +44,9 @@ impl File {
         path: Path<'_>,
     ) -> Result<Self, Ext4Error> {
         let inode = fs.path_to_inode(path, FollowSymlinks::All).await?;
+        if !inode.file_type().is_regular_file() {
+            return Err(Ext4Error::IsASpecialFile);
+        }
 
         Self::open_inode(fs, inode)
     }

@@ -915,6 +915,44 @@ impl Ext4 {
     ) -> Result<Inode, Ext4Error> {
         resolve::resolve_path(self, path, follow).await.map(|v| v.0)
     }
+
+    /// Create a symbolic link at `path` pointing to `target`.
+    pub async fn symlink(
+        &self,
+        parent_dir: &Dir,
+        name: DirEntryName<'_>,
+        target: PathBuf,
+        uid: u32,
+        gid: u32,
+        time: Duration,
+    ) -> Result<Inode, Ext4Error> {
+        let mut inode = self
+            .create_inode(InodeCreationOptions {
+                file_type: FileType::Symlink,
+                mode: InodeMode::S_IFLNK,
+                uid,
+                gid,
+                time,
+                flags: InodeFlags::empty(),
+            })
+            .await?;
+        if target.as_ref().len() <= 60 {
+            // Fast symlink: store the target in the inode itself.
+            let mut target_bytes = [0; 60];
+            target_bytes[..target.as_ref().len()]
+                .copy_from_slice(target.as_ref());
+            inode.set_inline_data(target_bytes);
+            inode.set_size_in_bytes(u64_from_usize(target.as_ref().len()));
+            inode.set_flags(InodeFlags::INLINE_DATA);
+            inode.write(self).await?;
+        } else {
+            // Slow symlink: store the target in a data block.
+            let target_bytes = target.as_ref();
+            write_at(self, &mut inode, target_bytes, 0).await?;
+        }
+        parent_dir.link(name, &mut inode).await?;
+        Ok(inode)
+    }
 }
 
 /// These methods mirror the [`std::fs`][stdfs] API.
@@ -1178,44 +1216,6 @@ impl Ext4 {
 
         inner(self, path.try_into().map_err(|_| Ext4Error::MalformedPath)?)
             .await
-    }
-
-    /// Create a symbolic link at `path` pointing to `target`.
-    pub async fn symlink(
-        &self,
-        parent_dir: &Dir,
-        name: DirEntryName<'_>,
-        target: PathBuf,
-        uid: u32,
-        gid: u32,
-        time: Duration,
-    ) -> Result<Inode, Ext4Error> {
-        let mut inode = self
-            .create_inode(InodeCreationOptions {
-                file_type: FileType::Symlink,
-                mode: InodeMode::S_IFLNK,
-                uid,
-                gid,
-                time,
-                flags: InodeFlags::empty(),
-            })
-            .await?;
-        if target.as_ref().len() <= 60 {
-            // Fast symlink: store the target in the inode itself.
-            let mut target_bytes = [0; 60];
-            target_bytes[..target.as_ref().len()]
-                .copy_from_slice(target.as_ref());
-            inode.set_inline_data(target_bytes);
-            inode.set_size_in_bytes(u64_from_usize(target.as_ref().len()));
-            inode.set_flags(InodeFlags::INLINE_DATA);
-            inode.write(self).await?;
-        } else {
-            // Slow symlink: store the target in a data block.
-            let target_bytes = target.as_ref();
-            write_at(self, &mut inode, target_bytes, 0).await?;
-        }
-        parent_dir.link(name, &mut inode).await?;
-        Ok(inode)
     }
 }
 
