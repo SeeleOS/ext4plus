@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Error when writing to immutable files.
+
 ## 0.1.0-alpha.5
 
 - BREAKING: Some imports have been moved to modules. Use `ext4plus::prelude` if you want to keep import compatibility.

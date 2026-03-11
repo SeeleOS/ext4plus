@@ -286,6 +286,9 @@ pub async fn write_at(
     buf: &[u8],
     offset: u64,
 ) -> Result<usize, Ext4Error> {
+    if inode.flags().contains(InodeFlags::IMMUTABLE) {
+        return Err(Ext4Error::Readonly);
+    }
     if inode.flags().contains(InodeFlags::EXTENTS) {
         write_at_extent(ext4, inode, buf, offset).await
     } else {
