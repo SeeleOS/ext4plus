@@ -10,7 +10,11 @@
 use crate::block_group::BlockGroupIndex;
 use crate::block_index::FsBlockIndex;
 use crate::checksum::Checksum;
-use crate::error::{CorruptKind, Ext4Error};
+use crate::error::{
+    CorruptKind, Ext4Error, InodeCreateError, InodeGetBlockGroupLocationError,
+    InodeGetLocationError, InodeParseError, InodeReadError, InodeWriteError,
+    SymlinkReadError, WriteError,
+};
 use crate::file_blocks::FileBlocks;
 use crate::file_type::FileType;
 use crate::metadata::Metadata;
@@ -194,14 +198,10 @@ impl Inode {
         ext4: &Ext4,
         index: InodeIndex,
         data: &[u8],
-    ) -> Result<(Self, u32), Ext4Error> {
+    ) -> Result<(Self, u32), InodeReadError> {
         // Inodes must be at least 128 bytes.
         if data.len() < 128 {
-            return Err(CorruptKind::InodeTruncated {
-                inode: index,
-                size: data.len(),
-            }
-            .into());
+            return Err(InodeParseError::Truncated { size: data.len() })?;
         }
 
         // If metadata checksums are enabled, the inode must be big
@@ -209,11 +209,7 @@ impl Inode {
         if ext4.has_metadata_checksums()
             && data.len() < (Self::I_CHECKSUM_HI_OFFSET + 2)
         {
-            return Err(CorruptKind::InodeTruncated {
-                inode: index,
-                size: data.len(),
-            }
-            .into());
+            return Err(InodeParseError::Truncated { size: data.len() })?;
         }
 
         let i_mode = read_u16le(data, 0x0);
@@ -241,9 +237,8 @@ impl Inode {
         Ok((
             Self {
                 index,
-                file_type: FileType::try_from(mode).map_err(|_| {
-                    CorruptKind::InodeFileType { inode: index, mode }
-                })?,
+                file_type: FileType::try_from(mode)
+                    .map_err(|_| InodeParseError::InvalidFileType { mode })?,
                 inode_data: data.to_vec(),
                 checksum_base,
             },
@@ -258,7 +253,7 @@ impl Inode {
         index: InodeIndex,
         inode_creation_data: InodeCreationOptions,
         ext4: &Ext4,
-    ) -> Result<Self, Ext4Error> {
+    ) -> Result<Self, InodeCreateError> {
         let inode_data = vec![0; usize::from(ext4.0.superblock.inode_size())];
         let mut checksum_base =
             Checksum::with_seed(ext4.0.superblock.checksum_seed());
@@ -307,7 +302,7 @@ impl Inode {
     pub async fn read(
         ext4: &Ext4,
         inode: InodeIndex,
-    ) -> Result<Self, Ext4Error> {
+    ) -> Result<Self, InodeReadError> {
         let (block_index, offset_within_block) =
             get_inode_location(ext4, inode)?;
 
@@ -344,7 +339,7 @@ impl Inode {
 
             let actual_checksum = checksum.finalize();
             if actual_checksum != expected_checksum {
-                return Err(CorruptKind::InodeChecksum(inode.index).into());
+                return Err(InodeParseError::Checksum)?;
             }
         }
 
@@ -380,7 +375,7 @@ impl Inode {
 
     /// Write the inode back to disk.
     #[maybe_async::maybe_async]
-    pub async fn write(&mut self, ext4: &Ext4) -> Result<(), Ext4Error> {
+    pub async fn write(&mut self, ext4: &Ext4) -> Result<(), InodeWriteError> {
         let (block_index, offset_within_block) =
             get_inode_location(ext4, self.index)?;
         let block_size = ext4.0.superblock.block_size().to_u64();
@@ -391,11 +386,11 @@ impl Inode {
             .unwrap();
         self.update_inode_data(ext4);
         // Write only the data we've saved to avoid overwriting any unread info
-        let writer = ext4.0.writer.as_ref().ok_or(Ext4Error::Readonly)?;
+        let writer = ext4.0.writer.as_ref().ok_or(WriteError::ReadOnly)?;
         writer
             .write(pos, &self.inode_data)
             .await
-            .map_err(Ext4Error::Io)?;
+            .map_err(WriteError::Io)?;
         Ok(())
     }
 
@@ -404,14 +399,14 @@ impl Inode {
     pub async fn symlink_target(
         &self,
         ext4: &Ext4,
-    ) -> Result<PathBuf, Ext4Error> {
+    ) -> Result<PathBuf, SymlinkReadError> {
         if !self.file_type.is_symlink() {
-            return Err(Ext4Error::NotASymlink);
+            return Err(SymlinkReadError::NotASymlink)?;
         }
 
         // An empty symlink target is not allowed.
         if self.size_in_bytes() == 0 {
-            return Err(CorruptKind::SymlinkTarget(self.index).into());
+            return Err(SymlinkReadError::InvalidSymlinkTarget)?;
         }
 
         // Symlink targets of up to 59 bytes are stored inline. Longer
@@ -423,12 +418,12 @@ impl Inode {
             let len = usize::try_from(self.size_in_bytes()).unwrap();
             let target = &self.inline_data()[..len];
 
-            PathBuf::try_from(target)
-                .map_err(|_| CorruptKind::SymlinkTarget(self.index).into())
+            Ok(PathBuf::try_from(target)
+                .map_err(|_| SymlinkReadError::InvalidSymlinkTarget)?)
         } else {
             let data = ext4.read_inode_file(self).await?;
-            PathBuf::try_from(data)
-                .map_err(|_| CorruptKind::SymlinkTarget(self.index).into())
+            Ok(PathBuf::try_from(data)
+                .map_err(|_| SymlinkReadError::InvalidSymlinkTarget)?)
         }
     }
 
@@ -736,7 +731,7 @@ impl Inode {
 pub(crate) fn get_inode_block_group_location(
     sb: &Superblock,
     inode: InodeIndex,
-) -> Result<(BlockGroupIndex, u32), Ext4Error> {
+) -> Result<(BlockGroupIndex, u32), InodeGetBlockGroupLocationError> {
     let inode_minus_1 = inode.get().checked_sub(1).unwrap();
 
     let block_group_index = inode_minus_1 / sb.inodes_per_block_group();
@@ -751,7 +746,7 @@ pub(crate) fn get_inode_block_group_location(
 fn get_inode_location(
     ext4: &Ext4,
     inode: InodeIndex,
-) -> Result<(FsBlockIndex, u32), Ext4Error> {
+) -> Result<(FsBlockIndex, u32), InodeGetLocationError> {
     let sb = &ext4.0.superblock;
 
     let (block_group_index, index_within_group) =
@@ -759,7 +754,7 @@ fn get_inode_location(
 
     let group = ext4.get_block_group_descriptor(block_group_index);
 
-    let err = || CorruptKind::InodeLocation {
+    let err = || InodeGetLocationError::Algorithm {
         inode,
         block_group: block_group_index,
         inodes_per_block_group: sb.inodes_per_block_group(),

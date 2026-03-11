@@ -8,6 +8,7 @@
 
 use crate::expected_holes_data;
 use crate::test_util::load_test_disk1;
+use ext4plus::error::{PathError, ResolveError, SymlinkReadError};
 #[cfg(not(feature = "sync"))]
 use ext4plus::prelude::AsyncIterator;
 use ext4plus::prelude::{Ext4Error, Path, PathBuf};
@@ -160,19 +161,25 @@ async fn test_read_link() {
 
     // Error: path is not absolute.
     let err = fs.read_link("not_absolute").await.unwrap_err();
-    assert!(matches!(err, Ext4Error::NotAbsolute));
+    assert!(matches!(err, ResolveError::NotAbsolute));
 
     // Error: malformed path.
     let err = fs.read_link("\0").await.unwrap_err();
-    assert!(matches!(err, Ext4Error::MalformedPath));
+    assert!(matches!(
+        err,
+        ResolveError::PathError(PathError::MalformedPath)
+    ));
 
     // Error: does not exist.
     let err = fs.read_link("/does_not_exist").await.unwrap_err();
-    assert!(matches!(err, Ext4Error::NotFound));
+    assert!(matches!(err, ResolveError::NotFound));
 
     // Error: not a symlink.
     let err = fs.read_link("/small_file").await.unwrap_err();
-    assert!(matches!(err, Ext4Error::NotASymlink));
+    assert!(matches!(
+        err,
+        ResolveError::SymlinkReadError(SymlinkReadError::NotASymlink)
+    ));
 }
 
 #[maybe_async::test(

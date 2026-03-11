@@ -17,7 +17,7 @@ use core::num::NonZero;
 /// `1024..=2_147_483_648`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]
-pub(crate) struct BlockSize(NonZero<u32>);
+pub struct BlockSize(NonZero<u32>);
 
 impl BlockSize {
     pub(crate) fn from_superblock_value(log_block_size: u32) -> Option<Self> {

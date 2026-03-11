@@ -1,8 +1,9 @@
 use crate::block_index::FsBlockIndex;
 use crate::checksum::Checksum;
-use crate::{Ext4, Ext4Error};
+use crate::Ext4;
 
 use alloc::vec;
+use crate::error::{BlockError, BlockReadError};
 
 pub(crate) struct BitmapHandle {
     block: FsBlockIndex,
@@ -20,7 +21,7 @@ impl BitmapHandle {
         &self,
         n: u32,
         ext4: &Ext4,
-    ) -> Result<bool, Ext4Error> {
+    ) -> Result<bool, BlockReadError> {
         let mut dst = [0; 1];
         let byte_index = n / 8;
         let bit_index = n % 8;
@@ -37,7 +38,7 @@ impl BitmapHandle {
         n: u32,
         value: bool,
         ext4: &Ext4,
-    ) -> Result<(), Ext4Error> {
+    ) -> Result<(), BlockError> {
         let mut dst = [0; 1];
         let byte_index = n / 8;
         let bit_index = n % 8;
@@ -59,7 +60,7 @@ impl BitmapHandle {
         &self,
         value: bool,
         ext4: &Ext4,
-    ) -> Result<Option<u32>, Ext4Error> {
+    ) -> Result<Option<u32>, BlockReadError> {
         let mut dst = [0; 1];
         for byte_index in 0..ext4.0.superblock.block_size().to_u32() {
             ext4.read_from_block(self.block, byte_index, &mut dst)
@@ -107,7 +108,7 @@ impl BitmapHandle {
         n: u32,
         value: bool,
         ext4: &Ext4,
-    ) -> Result<Option<u32>, Ext4Error> {
+    ) -> Result<Option<u32>, BlockReadError> {
         let mut dst = [0; 1];
         let mut count: u32 = 0;
         for byte_index in 0..ext4.0.superblock.block_size().to_u32() {
@@ -141,7 +142,7 @@ impl BitmapHandle {
     pub(crate) async fn calc_checksum(
         &self,
         ext4: &Ext4,
-    ) -> Result<u32, Ext4Error> {
+    ) -> Result<u32, BlockReadError> {
         let mut dst = vec![0; ext4.0.superblock.block_size().to_usize()];
         ext4.read_from_block(self.block, 0, &mut dst).await?;
         let mut checksum =

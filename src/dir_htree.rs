@@ -11,7 +11,7 @@ use crate::block_index::{FileBlockIndex, FsBlockIndex};
 use crate::dir_block::DirBlock;
 use crate::dir_entry::{DirEntry, DirEntryName};
 use crate::dir_entry_hash::HashAlg;
-use crate::error::{CorruptKind, Ext4Error};
+use crate::error::{CorruptKind, DirBlockReadError, Ext4Error};
 use crate::extent::Extent;
 use crate::inode::{Inode, InodeFlags, InodeIndex};
 #[cfg(not(feature = "sync"))]
@@ -186,7 +186,7 @@ async fn read_root_block(
     fs: &Ext4,
     inode: &Inode,
     block: &mut [u8],
-) -> Result<(), Ext4Error> {
+) -> Result<(), DirBlockReadError> {
     let mut file_blocks = FileBlocks::new(fs.clone(), inode)?;
 
     // Get the first block.
@@ -204,7 +204,7 @@ async fn read_root_block(
         has_htree: true,
         checksum_base: inode.checksum_base().clone(),
     };
-    dir_block.read(block).await
+    Ok(dir_block.read(block).await?)
 }
 
 /// Check if name is "." or ".." and return the corresponding entry if

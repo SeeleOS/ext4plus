@@ -10,6 +10,7 @@ use super::test_util::{
     Ext4Wrapper, load_compressed_filesystem, load_compressed_filesystem_rw,
     load_test_disk1_rw,
 };
+use ext4plus::error::ResolveError;
 use ext4plus::path::PathBuf;
 #[cfg(not(feature = "sync"))]
 use ext4plus::prelude::AsyncIterator;
@@ -211,7 +212,7 @@ async fn test_inode_deletion() {
         .path_to_inode("/empty_file".try_into().unwrap(), FollowSymlinks::All)
         .await
         .unwrap_err();
-    assert!(matches!(err, Ext4Error::NotFound));
+    assert!(matches!(err, ResolveError::NotFound));
 }
 
 #[maybe_async::test(

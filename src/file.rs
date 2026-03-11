@@ -13,7 +13,9 @@
 //! by the methods of [`File`] but can also be used directly if needed.
 
 use crate::block_index::FileBlockIndex;
-use crate::error::Ext4Error;
+use crate::error::{
+    Ext4Error, FileOpenError, FileReadError, FileTruncateError, FileWriteError,
+};
 use crate::extent::Extent;
 use crate::file_blocks::FileBlocks;
 use crate::inode::Inode;
@@ -41,13 +43,13 @@ impl File {
     pub(crate) async fn open(
         fs: &Ext4,
         path: Path<'_>,
-    ) -> Result<Self, Ext4Error> {
+    ) -> Result<Self, FileOpenError> {
         let inode = fs.path_to_inode(path, FollowSymlinks::All).await?;
         if !inode.file_type().is_regular_file() {
-            return Err(Ext4Error::IsASpecialFile);
+            return Err(Ext4Error::IsASpecialFile)?;
         }
 
-        Self::open_inode(fs, inode)
+        Ok(Self::open_inode(fs, inode)?)
     }
 
     /// Open `inode`. Note that unlike `File::open`, this allows any
@@ -87,7 +89,7 @@ impl File {
     pub async fn read_bytes(
         &mut self,
         buf: &mut [u8],
-    ) -> Result<usize, Ext4Error> {
+    ) -> Result<usize, FileReadError> {
         let bytes_read = read_at_inner(
             &self.fs,
             &self.inode,
@@ -113,7 +115,7 @@ impl File {
         &mut self,
         buf: &mut [u8],
         pos: u64,
-    ) -> Result<usize, Ext4Error> {
+    ) -> Result<usize, FileReadError> {
         read_at_inner(&self.fs, &self.inode, &self.file_blocks, buf, pos).await
     }
 
@@ -124,7 +126,7 @@ impl File {
     pub async fn write_bytes(
         &mut self,
         buf: &[u8],
-    ) -> Result<usize, Ext4Error> {
+    ) -> Result<usize, FileWriteError> {
         let written =
             write_at(&self.fs, &mut self.inode, buf, self.position).await?;
         self.position = self
@@ -144,13 +146,16 @@ impl File {
         &mut self,
         buf: &[u8],
         pos: u64,
-    ) -> Result<usize, Ext4Error> {
+    ) -> Result<usize, FileWriteError> {
         write_at(&self.fs, &mut self.inode, buf, pos).await
     }
 
     /// Truncate the file to `new_size` bytes.
     #[maybe_async::maybe_async]
-    pub async fn truncate(&mut self, new_size: u64) -> Result<(), Ext4Error> {
+    pub async fn truncate(
+        &mut self,
+        new_size: u64,
+    ) -> Result<(), FileTruncateError> {
         truncate(&self.fs, &mut self.inode, new_size).await?;
         Ok(())
     }
@@ -200,7 +205,7 @@ pub(crate) async fn read_at_inner(
     file_blocks: &FileBlocks,
     mut buf: &mut [u8],
     offset: u64,
-) -> Result<usize, Ext4Error> {
+) -> Result<usize, FileReadError> {
     // Nothing to do if output buffer is empty.
     if buf.is_empty() {
         return Ok(0);
@@ -282,7 +287,7 @@ pub async fn read_at(
     inode: &Inode,
     buf: &mut [u8],
     offset: u64,
-) -> Result<usize, Ext4Error> {
+) -> Result<usize, FileReadError> {
     let file_blocks = FileBlocks::from_inode(inode, ext4.clone())?;
     read_at_inner(ext4, inode, &file_blocks, buf, offset).await
 }
@@ -295,9 +300,9 @@ pub async fn write_at(
     inode: &mut Inode,
     buf: &[u8],
     offset: u64,
-) -> Result<usize, Ext4Error> {
+) -> Result<usize, FileWriteError> {
     if inode.flags().contains(InodeFlags::IMMUTABLE) {
-        return Err(Ext4Error::Readonly);
+        return Err(Ext4Error::Readonly)?;
     }
     if inode.flags().contains(InodeFlags::EXTENTS) {
         write_at_extent(ext4, inode, buf, offset).await
@@ -312,7 +317,7 @@ async fn write_at_block_map(
     inode: &mut Inode,
     buf: &[u8],
     offset: u64,
-) -> Result<usize, Ext4Error> {
+) -> Result<usize, FileWriteError> {
     let mut block_map =
         file_blocks::block_map::BlockMap::from_inode(inode, ext4.clone());
     let block_size = ext4.0.superblock.block_size();
@@ -391,7 +396,7 @@ async fn write_at_extent(
     inode: &mut Inode,
     buf: &[u8],
     offset: u64,
-) -> Result<usize, Ext4Error> {
+) -> Result<usize, FileWriteError> {
     fn blocks_needed_for_bytes(
         offset_in_block: usize,
         bytes_remaining: usize,
@@ -869,7 +874,7 @@ pub async fn truncate(
     ext4: &Ext4,
     inode: &mut Inode,
     new_size: u64,
-) -> Result<(), Ext4Error> {
+) -> Result<(), FileTruncateError> {
     let old_size = inode.size_in_bytes();
     if new_size == old_size {
         return Ok(());

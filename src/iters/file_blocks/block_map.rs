@@ -14,6 +14,7 @@ use crate::util::read_u32le;
 use crate::{Ext4, Ext4Error};
 use alloc::vec;
 use alloc::vec::Vec;
+use crate::error::BlockReadError;
 
 /// Block map iterator.
 ///
@@ -194,7 +195,7 @@ struct IndirectBlockIter {
 
 impl IndirectBlockIter {
     #[maybe_async::maybe_async]
-    async fn new(fs: Ext4, block_index: u32) -> Result<Self, Ext4Error> {
+    async fn new(fs: Ext4, block_index: u32) -> Result<Self, BlockReadError> {
         let mut block = vec![0u8; fs.0.superblock.block_size().to_usize()];
         fs.read_from_block(FsBlockIndex::from(block_index), 0, &mut block)
             .await?;

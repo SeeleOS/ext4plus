@@ -166,6 +166,7 @@ use path::{Path, PathBuf};
 use superblock::Superblock;
 use util::{u64_from_usize, usize_from_u32};
 
+use crate::error::{AllocBlockError, BlockReadError, DirOpenError, FileDeleteError, FileOpenError, FileOpenReadError, FileReadError, FreeBlockError, InodeAllocateError, InodeCreateError, InodeFreeError, InodeReadError, LoadError, PathError, ReadError, ResolveError, SymlinkCreateError, UpdateChecksumError, WriteError};
 pub use dir_entry::{DirEntry, DirEntryName, DirEntryNameError};
 pub use features::IncompatibleFeatures;
 pub use file_type::FileType;
@@ -205,7 +206,7 @@ impl Ext4 {
     /// This reads and validates the superblock, block group
     /// descriptors, and journal. No other data is read.
     #[maybe_async::maybe_async]
-    pub async fn load(reader: Box<dyn Ext4Read>) -> Result<Self, Ext4Error> {
+    pub async fn load(reader: Box<dyn Ext4Read>) -> Result<Self, LoadError> {
         Self::load_with_writer(reader, None).await
     }
 
@@ -217,7 +218,7 @@ impl Ext4 {
     pub async fn load_with_writer(
         mut reader: Box<dyn Ext4Read>,
         mut writer: Option<Box<dyn Ext4Write>>,
-    ) -> Result<Self, Ext4Error> {
+    ) -> Result<Self, LoadError> {
         // The first 1024 bytes are reserved for "weird" stuff like x86
         // boot sectors.
         let superblock_start = 1024;
@@ -258,7 +259,7 @@ impl Ext4 {
     #[maybe_async::maybe_async]
     pub async fn load_from_path<P: AsRef<std::path::Path>>(
         path: P,
-    ) -> Result<Self, Ext4Error> {
+    ) -> Result<Self, LoadError> {
         let file = std::fs::File::open(path)
             .map_err(|err| Ext4Error::Io(Box::new(err)))?;
         Self::load(Box::new(file)).await
@@ -287,7 +288,7 @@ impl Ext4 {
 
     /// Read the inode of the root `/` directory.
     #[maybe_async::maybe_async]
-    pub async fn read_root_inode(&self) -> Result<Inode, Ext4Error> {
+    pub async fn read_root_inode(&self) -> Result<Inode, InodeReadError> {
         let root_inode_index = InodeIndex::new(2).unwrap();
         Inode::read(self, root_inode_index).await
     }
@@ -317,16 +318,16 @@ impl Ext4 {
         original_block_index: FsBlockIndex,
         offset_within_block: u32,
         dst: &mut [u8],
-    ) -> Result<(), Ext4Error> {
+    ) -> Result<(), BlockReadError> {
         let block_index = self.0.journal.map_block_index(original_block_index);
 
         let err = || {
-            Ext4Error::from(CorruptKind::BlockRead {
+            BlockReadError::Corrupt {
                 block_index,
                 original_block_index,
                 offset_within_block,
                 read_len: dst.len(),
-            })
+            }
         };
 
         // The first 1024 bytes are reserved for non-filesystem
@@ -367,7 +368,7 @@ impl Ext4 {
                 dst,
             )
             .await
-            .map_err(Ext4Error::Io)?;
+            .map_err(ReadError::Io)?;
         Ok(())
     }
 
@@ -480,7 +481,7 @@ impl Ext4 {
         &self,
         block_group_index: BlockGroupIndex,
         bitmap_handle: BitmapHandle,
-    ) -> Result<(), Ext4Error> {
+    ) -> Result<(), UpdateChecksumError> {
         let checksum = bitmap_handle.calc_checksum(self).await?;
         let block_group = self.get_block_group_descriptor(block_group_index);
         block_group.set_block_bitmap_checksum(checksum);
@@ -493,7 +494,7 @@ impl Ext4 {
         &self,
         block_group_index: BlockGroupIndex,
         bitmap_handle: BitmapHandle,
-    ) -> Result<(), Ext4Error> {
+    ) -> Result<(), UpdateChecksumError> {
         let checksum = bitmap_handle.calc_checksum(self).await?;
         let block_group = self.get_block_group_descriptor(block_group_index);
         block_group.set_inode_bitmap_checksum(checksum);
@@ -518,7 +519,7 @@ impl Ext4 {
     pub(crate) async fn alloc_inode(
         &self,
         inode_type: FileType,
-    ) -> Result<InodeIndex, Ext4Error> {
+    ) -> Result<InodeIndex, InodeAllocateError> {
         let mut bg_id = 0;
         let mut bg_count = self.0.superblock.num_block_groups();
         let mut rewind = false;
@@ -602,14 +603,14 @@ impl Ext4 {
             // Will never overflow
             bg_id = bg_id.saturating_add(1);
         }
-        Err(Ext4Error::NoSpace)
+        Err(WriteError::NoSpace)?
     }
 
     #[maybe_async::maybe_async]
     pub(crate) async fn free_inode(
         &self,
         inode: Inode,
-    ) -> Result<(), Ext4Error> {
+    ) -> Result<(), InodeFreeError> {
         let (block_group_index, inode_offset) =
             get_inode_block_group_location(&self.0.superblock, inode.index)?;
         let inode_bitmap_handle =
@@ -659,13 +660,13 @@ impl Ext4 {
     pub(crate) async fn alloc_block_num(
         &self,
         block: FsBlockIndex,
-    ) -> Result<(), Ext4Error> {
+    ) -> Result<(), AllocBlockError> {
         let (block_group_index, block_offset) =
             self.block_block_group_location(block)?;
         let block_bitmap_handle =
             self.get_block_bitmap_handle(block_group_index);
         if block_bitmap_handle.query(block_offset, self).await? {
-            return Err(Ext4Error::AlreadyExists);
+            return Err(AllocBlockError::AlreadyExists);
         }
         block_bitmap_handle.set(block_offset, true, self).await?;
         self.update_block_bitmap_checksum(
@@ -685,7 +686,7 @@ impl Ext4 {
     pub(crate) async fn alloc_block(
         &self,
         inode_index: InodeIndex,
-    ) -> Result<FsBlockIndex, Ext4Error> {
+    ) -> Result<FsBlockIndex, AllocBlockError> {
         let mut bg_id = (inode_index.get() - 1)
             / self.0.superblock.inodes_per_block_group();
         let mut bg_count = self.0.superblock.num_block_groups();
@@ -737,7 +738,7 @@ impl Ext4 {
             // Will never overflow
             bg_id = bg_id.saturating_add(1);
         }
-        Err(Ext4Error::NoSpace)
+        Err(AllocBlockError::NoSpace)
     }
 
     /// Tries to allocate `num_blocks` contiguous blocks.
@@ -746,7 +747,7 @@ impl Ext4 {
         &self,
         inode_index: InodeIndex,
         num_blocks: NonZeroU32,
-    ) -> Result<FsBlockIndex, Ext4Error> {
+    ) -> Result<FsBlockIndex, AllocBlockError> {
         let mut bg_id = (inode_index.get() - 1)
             / self.0.superblock.inodes_per_block_group();
         let mut bg_count = self.0.superblock.num_block_groups();
@@ -797,7 +798,7 @@ impl Ext4 {
             }
             bg_id = bg_id.saturating_add(1);
         }
-        Err(Ext4Error::NoSpace)
+        Err(AllocBlockError::NoSpace)
     }
 
     /// Tries to allocate `num_blocks` contiguous blocks
@@ -808,7 +809,7 @@ impl Ext4 {
         &self,
         inode_index: InodeIndex,
         num_blocks: NonZeroU32,
-    ) -> Result<(FsBlockIndex, NonZeroU32), Ext4Error> {
+    ) -> Result<(FsBlockIndex, NonZeroU32), AllocBlockError> {
         // TODO: very inefficient on full disk
         for i in (0..num_blocks.get()).rev() {
             if let Ok(block_index) = self
@@ -821,7 +822,7 @@ impl Ext4 {
                 return Ok((block_index, NonZeroU32::new(i).unwrap()));
             }
         }
-        Err(Ext4Error::NoSpace)
+        Err(AllocBlockError::NoSpace)
     }
 
     #[expect(unused)]
@@ -857,7 +858,7 @@ impl Ext4 {
     pub(crate) async fn free_block(
         &self,
         block_index: FsBlockIndex,
-    ) -> Result<(), Ext4Error> {
+    ) -> Result<(), FreeBlockError> {
         assert_ne!(block_index, 0);
         let (block_group_index, block_offset) =
             self.block_block_group_location(block_index)?;
@@ -883,7 +884,7 @@ impl Ext4 {
         &self,
         block_index: FsBlockIndex,
         num_blocks: NonZeroU32,
-    ) -> Result<(), Ext4Error> {
+    ) -> Result<(), FreeBlockError> {
         assert_ne!(block_index, 0);
         let (block_group_index, block_offset) =
             self.block_block_group_location(block_index)?;
@@ -913,10 +914,10 @@ impl Ext4 {
     pub(crate) async fn delete_file(
         &self,
         inode: Inode,
-    ) -> Result<(), Ext4Error> {
+    ) -> Result<(), FileDeleteError> {
         let blocks = FileBlocks::new(self.clone(), &inode)?;
         blocks.free_all(self).await?;
-        self.free_inode(inode).await
+        Ok(self.free_inode(inode).await?)
     }
 
     /// Create a new inode of the given type, and return its index.
@@ -924,7 +925,7 @@ impl Ext4 {
     pub async fn create_inode(
         &self,
         options: InodeCreationOptions,
-    ) -> Result<Inode, Ext4Error> {
+    ) -> Result<Inode, InodeCreateError> {
         // TODO: for the purposes of fsck, it is proper to write inode data, then mark as used
         let inode_index = self.alloc_inode(options.file_type).await?;
         Inode::create(inode_index, options, self).await
@@ -940,7 +941,7 @@ impl Ext4 {
     pub async fn read_inode_file(
         &self,
         inode: &Inode,
-    ) -> Result<Vec<u8>, Ext4Error> {
+    ) -> Result<Vec<u8>, FileReadError> {
         // Get the file size and initialize the output vector.
         let file_size_in_bytes = usize::try_from(inode.size_in_bytes())
             .map_err(|_| Ext4Error::FileTooLarge)?;
@@ -965,7 +966,7 @@ impl Ext4 {
         &self,
         path: Path<'_>,
         follow: FollowSymlinks,
-    ) -> Result<Inode, Ext4Error> {
+    ) -> Result<Inode, ResolveError> {
         resolve::resolve_path(self, path, follow).await.map(|v| v.0)
     }
 
@@ -979,7 +980,7 @@ impl Ext4 {
         uid: u32,
         gid: u32,
         time: Duration,
-    ) -> Result<Inode, Ext4Error> {
+    ) -> Result<Inode, SymlinkCreateError> {
         let mut inode = self
             .create_inode(InodeCreationOptions {
                 file_type: FileType::Symlink,
@@ -1028,11 +1029,11 @@ impl Ext4 {
     pub async fn canonicalize<'p, P>(
         &self,
         path: P,
-    ) -> Result<PathBuf, Ext4Error>
+    ) -> Result<PathBuf, ResolveError>
     where
         P: TryInto<Path<'p>>,
     {
-        let path = path.try_into().map_err(|_| Ext4Error::MalformedPath)?;
+        let path = path.try_into().map_err(|_| PathError::MalformedPath)?;
         resolve::resolve_path(self, path, FollowSymlinks::All)
             .await
             .map(|v| v.1)
@@ -1050,7 +1051,7 @@ impl Ext4 {
     /// This is not an exhaustive list of errors, see the
     /// [crate documentation](crate#errors).
     #[maybe_async::maybe_async]
-    pub async fn open<'p, P>(&self, path: P) -> Result<File, Ext4Error>
+    pub async fn open<'p, P>(&self, path: P) -> Result<File, FileOpenError>
     where
         P: TryInto<Path<'p>>,
     {
@@ -1070,7 +1071,10 @@ impl Ext4 {
     /// This is not an exhaustive list of errors, see the
     /// [crate documentation](crate#errors).
     #[maybe_async::maybe_async]
-    pub async fn read<'p, P>(&self, path: P) -> Result<Vec<u8>, Ext4Error>
+    pub async fn read<'p, P>(
+        &self,
+        path: P,
+    ) -> Result<Vec<u8>, FileOpenReadError>
     where
         P: TryInto<Path<'p>>,
     {
@@ -1078,17 +1082,17 @@ impl Ext4 {
         async fn inner(
             fs: &Ext4,
             path: Path<'_>,
-        ) -> Result<Vec<u8>, Ext4Error> {
+        ) -> Result<Vec<u8>, FileOpenReadError> {
             let inode = fs.path_to_inode(path, FollowSymlinks::All).await?;
 
             if inode.file_type().is_dir() {
-                return Err(Ext4Error::IsADirectory);
+                return Err(Ext4Error::IsADirectory)?;
             }
             if !inode.file_type().is_regular_file() {
-                return Err(Ext4Error::IsASpecialFile);
+                return Err(Ext4Error::IsASpecialFile)?;
             }
 
-            fs.read_inode_file(&inode).await
+            Ok(fs.read_inode_file(&inode).await?)
         }
 
         inner(self, path.try_into().map_err(|_| Ext4Error::MalformedPath)?)
@@ -1110,14 +1114,17 @@ impl Ext4 {
     pub async fn read_to_string<'p, P>(
         &self,
         path: P,
-    ) -> Result<String, Ext4Error>
+    ) -> Result<String, FileOpenReadError>
     where
         P: TryInto<Path<'p>>,
     {
         #[maybe_async::maybe_async]
-        async fn inner(fs: &Ext4, path: Path<'_>) -> Result<String, Ext4Error> {
+        async fn inner(
+            fs: &Ext4,
+            path: Path<'_>,
+        ) -> Result<String, FileOpenReadError> {
             let content = fs.read(path).await?;
-            String::from_utf8(content).map_err(|_| Ext4Error::NotUtf8)
+            Ok(String::from_utf8(content).map_err(|_| Ext4Error::NotUtf8)?)
         }
 
         inner(self, path.try_into().map_err(|_| Ext4Error::MalformedPath)?)
@@ -1139,7 +1146,10 @@ impl Ext4 {
     /// This is not an exhaustive list of errors, see the
     /// [crate documentation](crate#errors).
     #[maybe_async::maybe_async]
-    pub async fn read_link<'p, P>(&self, path: P) -> Result<PathBuf, Ext4Error>
+    pub async fn read_link<'p, P>(
+        &self,
+        path: P,
+    ) -> Result<PathBuf, ResolveError>
     where
         P: TryInto<Path<'p>>,
     {
@@ -1147,15 +1157,20 @@ impl Ext4 {
         async fn inner(
             fs: &Ext4,
             path: Path<'_>,
-        ) -> Result<PathBuf, Ext4Error> {
+        ) -> Result<PathBuf, ResolveError> {
             let inode = fs
                 .path_to_inode(path, FollowSymlinks::ExcludeFinalComponent)
                 .await?;
-            inode.symlink_target(fs).await
+            Ok(inode.symlink_target(fs).await?)
         }
 
-        inner(self, path.try_into().map_err(|_| Ext4Error::MalformedPath)?)
-            .await
+        inner(
+            self,
+            path.try_into().map_err(|_| {
+                ResolveError::PathError(PathError::MalformedPath)
+            })?,
+        )
+        .await
     }
 
     /// Get an iterator over the entries in a directory.
@@ -1170,7 +1185,10 @@ impl Ext4 {
     /// This is not an exhaustive list of errors, see the
     /// [crate documentation](crate#errors).
     #[maybe_async::maybe_async]
-    pub async fn read_dir<'p, P>(&self, path: P) -> Result<ReadDir, Ext4Error>
+    pub async fn read_dir<'p, P>(
+        &self,
+        path: P,
+    ) -> Result<ReadDir, DirOpenError>
     where
         P: TryInto<Path<'p>>,
     {
@@ -1178,18 +1196,23 @@ impl Ext4 {
         async fn inner(
             fs: &Ext4,
             path: Path<'_>,
-        ) -> Result<ReadDir, Ext4Error> {
+        ) -> Result<ReadDir, DirOpenError> {
             let inode = fs.path_to_inode(path, FollowSymlinks::All).await?;
 
             if !inode.file_type().is_dir() {
-                return Err(Ext4Error::NotADirectory);
+                return Err(ResolveError::NotADirectory)?;
             }
 
-            ReadDir::new(fs.clone(), &inode, path.into())
+            Ok(ReadDir::new(fs.clone(), &inode, path.into())?)
         }
 
-        inner(self, path.try_into().map_err(|_| Ext4Error::MalformedPath)?)
-            .await
+        inner(
+            self,
+            path.try_into().map_err(|_| {
+                ResolveError::PathError(PathError::MalformedPath)
+            })?,
+        )
+        .await
     }
 
     /// Check if `path` exists.
@@ -1205,21 +1228,29 @@ impl Ext4 {
     /// This is not an exhaustive list of errors, see the
     /// [crate documentation](crate#errors).
     #[maybe_async::maybe_async]
-    pub async fn exists<'p, P>(&self, path: P) -> Result<bool, Ext4Error>
+    pub async fn exists<'p, P>(&self, path: P) -> Result<bool, ResolveError>
     where
         P: TryInto<Path<'p>>,
     {
         #[maybe_async::maybe_async]
-        async fn inner(fs: &Ext4, path: Path<'_>) -> Result<bool, Ext4Error> {
+        async fn inner(
+            fs: &Ext4,
+            path: Path<'_>,
+        ) -> Result<bool, ResolveError> {
             match fs.path_to_inode(path, FollowSymlinks::All).await {
                 Ok(_) => Ok(true),
-                Err(Ext4Error::NotFound) => Ok(false),
+                Err(ResolveError::NotFound) => Ok(false),
                 Err(err) => Err(err),
             }
         }
 
-        inner(self, path.try_into().map_err(|_| Ext4Error::MalformedPath)?)
-            .await
+        inner(
+            self,
+            path.try_into().map_err(|_| {
+                ResolveError::PathError(PathError::MalformedPath)
+            })?,
+        )
+        .await
     }
 
     /// Get [`Metadata`] for `path`.
@@ -1233,7 +1264,10 @@ impl Ext4 {
     /// This is not an exhaustive list of errors, see the
     /// [crate documentation](crate#errors).
     #[maybe_async::maybe_async]
-    pub async fn metadata<'p, P>(&self, path: P) -> Result<Metadata, Ext4Error>
+    pub async fn metadata<'p, P>(
+        &self,
+        path: P,
+    ) -> Result<Metadata, FileOpenError>
     where
         P: TryInto<Path<'p>>,
     {
@@ -1241,13 +1275,18 @@ impl Ext4 {
         async fn inner(
             fs: &Ext4,
             path: Path<'_>,
-        ) -> Result<Metadata, Ext4Error> {
+        ) -> Result<Metadata, FileOpenError> {
             let inode = fs.path_to_inode(path, FollowSymlinks::All).await?;
             Ok(inode.metadata())
         }
 
-        inner(self, path.try_into().map_err(|_| Ext4Error::MalformedPath)?)
-            .await
+        inner(
+            self,
+            path.try_into().map_err(|_| {
+                ResolveError::PathError(PathError::MalformedPath)
+            })?,
+        )
+        .await
     }
 
     /// Get [`Metadata`] for `path`.
@@ -1269,7 +1308,7 @@ impl Ext4 {
     pub async fn symlink_metadata<'p, P>(
         &self,
         path: P,
-    ) -> Result<Metadata, Ext4Error>
+    ) -> Result<Metadata, FileOpenError>
     where
         P: TryInto<Path<'p>>,
     {
@@ -1277,15 +1316,20 @@ impl Ext4 {
         async fn inner(
             fs: &Ext4,
             path: Path<'_>,
-        ) -> Result<Metadata, Ext4Error> {
+        ) -> Result<Metadata, FileOpenError> {
             let inode = fs
                 .path_to_inode(path, FollowSymlinks::ExcludeFinalComponent)
                 .await?;
             Ok(inode.metadata())
         }
 
-        inner(self, path.try_into().map_err(|_| Ext4Error::MalformedPath)?)
-            .await
+        inner(
+            self,
+            path.try_into().map_err(|_| {
+                ResolveError::PathError(PathError::MalformedPath)
+            })?,
+        )
+        .await
     }
 }
 

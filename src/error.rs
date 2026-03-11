@@ -6,6 +6,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 //! Error types used by various parts of the codebase.
+#![allow(missing_docs)]
+#![allow(unused_variables)]
 
 use crate::block_index::FsBlockIndex;
 use crate::block_size::BlockSize;
@@ -288,31 +290,8 @@ pub(crate) enum CorruptKind {
     /// tag.
     JournalDescriptorBlockTruncated,
 
-    /// An inode's checksum is invalid.
-    InodeChecksum(InodeIndex),
-
-    /// An inode is too small.
-    InodeTruncated { inode: InodeIndex, size: usize },
-
-    /// Failed to calculate an inode's location.
-    ///
-    /// This error can be returned by various calculations in
-    /// `get_inode_location`. The fields here are sufficient to
-    /// reconstruct which specific calculation failed.
-    InodeLocation {
-        inode: InodeIndex,
-        block_group: u32,
-        inodes_per_block_group: NonZero<u32>,
-        inode_size: u16,
-        block_size: BlockSize,
-        inode_table_first_block: FsBlockIndex,
-    },
-
     /// An inode's file type is invalid.
     InodeFileType { inode: InodeIndex, mode: InodeMode },
-
-    /// The target of a symlink is not a valid path.
-    SymlinkTarget(InodeIndex),
 
     /// The number of blocks in a block-map file exceeds 2^32.
     TooManyBlocksInFile,
@@ -477,34 +456,25 @@ impl Display for CorruptKind {
             Self::JournalDescriptorBlockTruncated => {
                 write!(f, "journal descriptor block is truncated")
             }
-            Self::InodeChecksum(inode) => {
-                write!(f, "invalid checksum for inode {inode}")
-            }
-            Self::InodeTruncated { inode, size } => {
-                write!(f, "inode {inode} is truncated: size={size}")
-            }
-            Self::InodeLocation {
-                inode,
-                block_group,
-                inodes_per_block_group,
-                inode_size,
-                block_size,
-                inode_table_first_block,
-            } => {
-                write!(
-                    f,
-                    "inode {inode} has invalid location: block_group={block_group}, inodes_per_block_group={inodes_per_block_group}, inode_size={inode_size}, block_size={block_size}, inode_table_first_block={inode_table_first_block}"
-                )
-            }
+            // Self::InodeLocation {
+            //     inode,
+            //     block_group,
+            //     inodes_per_block_group,
+            //     inode_size,
+            //     block_size,
+            //     inode_table_first_block,
+            // } => {
+            //     write!(
+            //         f,
+            //         "inode {inode} has invalid location: block_group={block_group}, inodes_per_block_group={inodes_per_block_group}, inode_size={inode_size}, block_size={block_size}, inode_table_first_block={inode_table_first_block}"
+            //     )
+            // }
             Self::InodeFileType { inode, mode } => {
                 write!(
                     f,
                     "inode {inode} has invalid file type: mode=0x{mode:04x}",
                     mode = mode.bits()
                 )
-            }
-            Self::SymlinkTarget(inode) => {
-                write!(f, "inode {inode} has an invalid symlink path")
             }
             Self::TooManyBlocksInFile => write!(f, "too many blocks in file"),
             Self::BlockMap(block) => {
@@ -754,6 +724,72 @@ impl From<IncompatibleKind> for Ext4Error {
     fn from(k: IncompatibleKind) -> Self {
         Self::Incompatible(Incompatible(k))
     }
+}
+
+error_set::error_set! {
+    ReadError := { Encrypted, Io(BoxedError) }
+    WriteError := { ReadOnly, NoSpace, Encrypted, Io(BoxedError) }
+    BlockReadError := {
+        Corrupt {
+            block_index: FsBlockIndex,
+            original_block_index: FsBlockIndex,
+            offset_within_block: u32,
+            read_len: usize,
+        }
+    } || ReadError
+    BlockWriteError := { Ext4(Ext4Error) } || WriteError
+    BlockError := BlockReadError || BlockWriteError
+    AllocBlockError := { NoSpace, AlreadyExists, Ext4(Ext4Error) } || WriteError || BlockReadError || UpdateChecksumError
+    FreeBlockError := { Ext4(Ext4Error) } || BlockError || UpdateChecksumError
+    UpdateChecksumError := { Ext4(Ext4Error) } || WriteError
+    PathError := { MalformedPath, PathTooLong }
+    InodeGetBlockGroupLocationError := {
+        Algorithm {
+            inode: InodeIndex,
+            block_group: u32,
+            inodes_per_block_group: NonZero<u32>,
+        }
+    }
+    InodeGetLocationError := {
+        Algorithm {
+            inode: InodeIndex,
+            block_group: u32,
+            inodes_per_block_group: NonZero<u32>,
+            inode_size: u16,
+            block_size: BlockSize,
+            inode_table_first_block: FsBlockIndex,
+        },
+        BlockGroup(InodeGetBlockGroupLocationError)
+    }
+    InodeAllocateError := { Ext4(Ext4Error) } || WriteError || BlockReadError
+    InodeFreeError := { Ext4(Ext4Error) } || InodeGetBlockGroupLocationError || BlockError
+    InodeParseError := { Truncated { size: usize }, InvalidFileType { mode: InodeMode }, Checksum }
+    InodeCreateError := { Ext4(Ext4Error) } || InodeAllocateError || InodeWriteError
+    InodeReadError := { Ext4(Ext4Error), InodeParse(InodeParseError) } || InodeGetLocationError
+    InodeWriteError := InodeGetLocationError || WriteError
+    FileOpenError := { Ext4(Ext4Error), Resolve(ResolveError) }
+    FileOpenReadError := FileOpenError || FileReadError
+    FileReadError := { Ext4(Ext4Error) } || BlockReadError
+    FileWriteError := { Ext4(Ext4Error) } || InodeWriteError || BlockWriteError
+    FileDeleteError := { Ext4(Ext4Error) } || InodeFreeError
+    FileTruncateError := { Ext4(Ext4Error) } || InodeWriteError
+    DirBlockReadError := { Ext4(Ext4Error) } || BlockReadError
+    DirCreateError := { Ext4(Ext4Error) } || FileWriteError
+    DirCorruptError := { Entry {
+        index: InodeIndex
+    } }
+    DirOpenError := FileOpenError
+    DirAddEntryError := { Ext4(Ext4Error), AlreadyExists } || InodeWriteError || WriteError || DirCorruptError || BlockReadError
+    DirRemoveEntryError := { Ext4(Ext4Error), NotFound } || InodeWriteError || WriteError || DirCorruptError || BlockReadError
+    IterDirError := { Encrypted, NotFound } || InodeReadError
+    SymlinkCreateError := InodeCreateError || FileWriteError || LinkError
+    SymlinkReadError := { NotASymlink, InvalidSymlinkTarget, FileRead(FileReadError), PathError(PathError) }
+    LinkError := DirAddEntryError || InodeWriteError
+    UnlinkError := { DotEntry, DeleteError(FileDeleteError) } || InodeWriteError || DirRemoveEntryError
+    ResolveError := { Ext4(Ext4Error), SymlinkReadError(SymlinkReadError), PathError(PathError), IterDir(IterDirError), NotADirectory, TooManySymlinks, NotAbsolute, NotFound } || InodeReadError
+    RegularFileOpenError := { IsASpecialFile } || FileOpenError
+    JournalLoadError := { Ext4(Ext4Error) } || InodeReadError
+    LoadError := { Ext4(Ext4Error) } || JournalLoadError
 }
 
 #[cfg(test)]

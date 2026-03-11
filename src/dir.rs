@@ -11,7 +11,11 @@ use crate::Ext4;
 use crate::dir_block::DirBlock;
 use crate::dir_entry::DirEntryName;
 use crate::dir_htree::get_dir_entry_via_htree;
-use crate::error::{CorruptKind, Ext4Error};
+use crate::error::{
+    CorruptKind, DirAddEntryError, DirCorruptError, DirCreateError,
+    DirRemoveEntryError, Ext4Error, IterDirError, LinkError, UnlinkError,
+    WriteError,
+};
 use crate::file::write_at;
 use crate::file_type::FileType;
 use crate::inode::{Inode, InodeFlags, InodeIndex};
@@ -32,16 +36,16 @@ pub(crate) async fn get_dir_entry_inode_by_name(
     fs: &Ext4,
     dir_inode: &Inode,
     name: DirEntryName<'_>,
-) -> Result<Inode, Ext4Error> {
+) -> Result<Inode, IterDirError> {
     assert!(dir_inode.file_type().is_dir());
 
     if dir_inode.flags().contains(InodeFlags::DIRECTORY_ENCRYPTED) {
-        return Err(Ext4Error::Encrypted);
+        return Err(IterDirError::Encrypted);
     }
 
     if dir_inode.flags().contains(InodeFlags::DIRECTORY_HTREE) {
         let entry = get_dir_entry_via_htree(fs, dir_inode, name).await?;
-        return Inode::read(fs, entry.inode).await;
+        return Ok(Inode::read(fs, entry.inode).await?);
     }
 
     // The entry's `path()` method is not called, so the value of the
@@ -52,11 +56,11 @@ pub(crate) async fn get_dir_entry_inode_by_name(
     while let Some(entry) = iter.next().await {
         let entry = entry?;
         if entry.file_name() == name {
-            return Inode::read(fs, entry.inode).await;
+            return Ok(Inode::read(fs, entry.inode).await?);
         }
     }
 
-    Err(Ext4Error::NotFound)
+    Err(IterDirError::NotFound)
 }
 
 /// Add an item to a directory without an htree.
@@ -70,14 +74,14 @@ pub(crate) async fn add_dir_entry_non_htree(
     name: DirEntryName<'_>,
     inode: InodeIndex,
     file_type: FileType,
-) -> Result<(), Ext4Error> {
+) -> Result<(), DirAddEntryError> {
     assert!(dir_inode.file_type().is_dir());
 
     if dir_inode.flags().contains(InodeFlags::DIRECTORY_ENCRYPTED) {
-        return Err(Ext4Error::Encrypted);
+        return Err(Ext4Error::Encrypted)?;
     }
     if dir_inode.flags().contains(InodeFlags::DIRECTORY_HTREE) {
-        return Err(Ext4Error::Readonly);
+        return Err(WriteError::ReadOnly)?;
     }
 
     // Fail if name already exists.
@@ -85,7 +89,7 @@ pub(crate) async fn add_dir_entry_non_htree(
         .await
         .is_ok()
     {
-        return Err(Ext4Error::AlreadyExists);
+        return Err(DirAddEntryError::AlreadyExists);
     }
 
     let block_size = fs.0.superblock.block_size().to_usize();
@@ -107,10 +111,14 @@ pub(crate) async fn add_dir_entry_non_htree(
             let rec_len_usize = usize::from(rec_len);
 
             if rec_len_usize < 8 || off.checked_add(rec_len_usize).is_none() {
-                return Err(CorruptKind::DirEntry(dir_inode.index).into());
+                return Err(DirCorruptError::Entry {
+                    index: dir_inode.index,
+                })?;
             }
             if off.checked_add(rec_len_usize).unwrap() > block_size {
-                return Err(CorruptKind::DirEntry(dir_inode.index).into());
+                return Err(DirCorruptError::Entry {
+                    index: dir_inode.index,
+                })?;
             }
 
             // `inode == 0` indicates "special" entry or unused; treat it as fully free.
@@ -142,9 +150,9 @@ pub(crate) async fn add_dir_entry_non_htree(
                         &mut block_buf,
                         off.checked_add(4).unwrap(),
                         u16::try_from(new_rec_len_for_curr).map_err(|_| {
-                            Ext4Error::from(CorruptKind::DirEntry(
-                                dir_inode.index,
-                            ))
+                            DirCorruptError::Entry {
+                                index: dir_inode.index,
+                            }
                         })?,
                     );
                 } else {
@@ -153,9 +161,9 @@ pub(crate) async fn add_dir_entry_non_htree(
                         &mut block_buf,
                         off.checked_add(4).unwrap(),
                         u16::try_from(rec_len_usize).map_err(|_| {
-                            Ext4Error::from(CorruptKind::DirEntry(
-                                dir_inode.index,
-                            ))
+                            DirCorruptError::Entry {
+                                index: dir_inode.index,
+                            }
                         })?,
                     );
                 }
@@ -179,7 +187,7 @@ pub(crate) async fn add_dir_entry_non_htree(
                     has_htree: false,
                     checksum_base: dir_inode.checksum_base().clone(),
                 }
-                .update_checksum(&mut block_buf)?;
+                .update_checksum(&mut block_buf);
 
                 // Write the block back.
                 fs.write_to_block(block_index, 0, &block_buf).await?;
@@ -193,7 +201,7 @@ pub(crate) async fn add_dir_entry_non_htree(
     }
 
     // Would require appending a new block to the directory file.
-    Err(Ext4Error::Readonly)
+    Err(WriteError::ReadOnly)?
 }
 
 /// Remove an item from a directory without an htree.
@@ -204,14 +212,14 @@ pub(crate) async fn remove_dir_entry_non_htree(
     fs: &Ext4,
     dir_inode: &Inode,
     name: DirEntryName<'_>,
-) -> Result<(), Ext4Error> {
+) -> Result<(), DirRemoveEntryError> {
     assert!(dir_inode.file_type().is_dir());
 
     if dir_inode.flags().contains(InodeFlags::DIRECTORY_ENCRYPTED) {
-        return Err(Ext4Error::Encrypted);
+        return Err(WriteError::Encrypted)?;
     }
     if dir_inode.flags().contains(InodeFlags::DIRECTORY_HTREE) {
-        return Err(Ext4Error::Readonly);
+        return Err(WriteError::ReadOnly)?;
     }
 
     let block_size = fs.0.superblock.block_size().to_usize();
@@ -235,7 +243,9 @@ pub(crate) async fn remove_dir_entry_non_htree(
             if rec_len_usize < 8
                 || off.checked_add(rec_len_usize).unwrap() > block_size
             {
-                return Err(CorruptKind::DirEntry(dir_inode.index).into());
+                return Err(Ext4Error::from(CorruptKind::DirEntry(
+                    dir_inode.index,
+                )))?;
             }
 
             if inode_field != 0 {
@@ -244,13 +254,15 @@ pub(crate) async fn remove_dir_entry_non_htree(
                 let name_start = off.checked_add(8).unwrap();
                 let name_end = name_start.checked_add(name_len).unwrap();
                 if name_end > off.checked_add(rec_len_usize).unwrap() {
-                    return Err(CorruptKind::DirEntry(dir_inode.index).into());
+                    return Err(DirCorruptError::Entry {
+                        index: dir_inode.index,
+                    })?;
                 }
 
                 if block_buf[name_start..name_end] == *name.as_ref() {
                     // Don't allow removing "." or "..".
                     if name.as_ref() == b"." || name.as_ref() == b".." {
-                        return Err(Ext4Error::Readonly);
+                        return Err(WriteError::ReadOnly)?;
                     }
 
                     if let Some(poff) = prev_off {
@@ -266,9 +278,9 @@ pub(crate) async fn remove_dir_entry_non_htree(
                             &mut block_buf,
                             poff.checked_add(4).unwrap(),
                             u16::try_from(new_len).map_err(|_| {
-                                Ext4Error::from(CorruptKind::DirEntry(
-                                    dir_inode.index,
-                                ))
+                                DirCorruptError::Entry {
+                                    index: dir_inode.index,
+                                }
                             })?,
                         );
                         // Zero inode to mark removed (not strictly necessary once merged).
@@ -287,7 +299,7 @@ pub(crate) async fn remove_dir_entry_non_htree(
                         has_htree: false,
                         checksum_base: dir_inode.checksum_base().clone(),
                     }
-                    .update_checksum(&mut block_buf)?;
+                    .update_checksum(&mut block_buf);
 
                     fs.write_to_block(block_index, 0, &block_buf).await?;
                     return Ok(());
@@ -301,7 +313,7 @@ pub(crate) async fn remove_dir_entry_non_htree(
         is_first = false;
     }
 
-    Err(Ext4Error::NotFound)
+    Err(DirRemoveEntryError::NotFound)?
 }
 
 /// Initialize a newly created directory inode by writing its initial entries.
@@ -319,23 +331,23 @@ pub(crate) async fn init_directory(
     fs: &Ext4,
     dir_inode: &mut Inode,
     parent_inode_index: InodeIndex,
-) -> Result<(), Ext4Error> {
+) -> Result<(), DirCreateError> {
     if !dir_inode.file_type().is_dir() {
-        return Err(Ext4Error::NotADirectory);
+        return Err(Ext4Error::NotADirectory)?;
     }
 
     if dir_inode.flags().contains(InodeFlags::DIRECTORY_ENCRYPTED) {
-        return Err(Ext4Error::Encrypted);
+        return Err(Ext4Error::Encrypted)?;
     }
 
     // We only support the plain (non-htree) format for initialization.
     if dir_inode.flags().contains(InodeFlags::DIRECTORY_HTREE) {
-        return Err(Ext4Error::Readonly);
+        return Err(Ext4Error::Readonly)?;
     }
 
     // Be conservative: don't try to re-init an existing directory.
     if dir_inode.size_in_bytes() != 0 {
-        return Err(Ext4Error::AlreadyExists);
+        return Err(Ext4Error::AlreadyExists)?;
     }
 
     let block_size = fs.0.superblock.block_size().to_usize();
@@ -358,7 +370,7 @@ pub(crate) async fn init_directory(
 
     let dot_len = dir_entry_min_size(dot.as_ref().len());
     if dot_len >= usable {
-        return Err(CorruptKind::DirEntry(dir_inode.index).into());
+        return Err(Ext4Error::from(CorruptKind::DirEntry(dir_inode.index)))?;
     }
 
     // '.' entry.
@@ -402,13 +414,13 @@ pub(crate) async fn init_directory(
             has_htree: false,
             checksum_base: dir_inode.checksum_base().clone(),
         }
-        .update_checksum(&mut block_buf)?;
+        .update_checksum(&mut block_buf);
     }
 
     // Persist: write_at will allocate blocks and update inode size/extent tree.
     let n = write_at(fs, dir_inode, &block_buf, 0).await?;
     if n != block_buf.len() {
-        return Err(Ext4Error::NoSpace);
+        return Err(Ext4Error::NoSpace)?;
     }
 
     Ok(())
@@ -475,7 +487,7 @@ impl Dir {
         fs: Ext4,
         mut dir_inode: Inode,
         parent_inode_index: InodeIndex,
-    ) -> Result<Self, Ext4Error> {
+    ) -> Result<Self, DirCreateError> {
         init_directory(&fs, &mut dir_inode, parent_inode_index).await?;
         Ok(Self {
             fs,
@@ -504,7 +516,7 @@ impl Dir {
     pub async fn get_entry(
         &self,
         name: DirEntryName<'_>,
-    ) -> Result<Inode, Ext4Error> {
+    ) -> Result<Inode, IterDirError> {
         get_dir_entry_inode_by_name(&self.fs, &self.inode, name).await
     }
 
@@ -522,7 +534,7 @@ impl Dir {
         &self,
         name: DirEntryName<'_>,
         target_inode: &mut Inode,
-    ) -> Result<(), Ext4Error> {
+    ) -> Result<(), LinkError> {
         let old = target_inode.links_count();
         let new = old.checked_add(1).ok_or(Ext4Error::Readonly)?;
         target_inode.set_links_count(new);
@@ -554,9 +566,9 @@ impl Dir {
         &self,
         name: DirEntryName<'_>,
         mut inode: Inode,
-    ) -> Result<Option<Inode>, Ext4Error> {
+    ) -> Result<Option<Inode>, UnlinkError> {
         if name.0 == b"." || name.0 == b".." {
-            return Err(Ext4Error::DotEntry);
+            return Err(UnlinkError::DotEntry)?;
         }
         let old = inode.links_count();
         inode.set_links_count(old.saturating_sub(1));
@@ -622,6 +634,6 @@ mod tests {
 
         // Check for something that does not exist.
         let err = lookup("does_not_exist").await.unwrap_err();
-        assert!(matches!(err, Ext4Error::NotFound));
+        assert!(matches!(err, IterDirError::NotFound));
     }
 }
