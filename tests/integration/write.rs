@@ -339,9 +339,9 @@ async fn test_multi_block_write() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_massive_write() {
-    // TODO: debug failure
+    // TODO: Debug why block map fails
+    // let fses = [load_test_disk1_rw().await, load_ext2_rw().await];
     let fses = [load_test_disk1_rw().await];
     for fs in fses {
         let mut inode = fs
@@ -377,8 +377,13 @@ async fn test_massive_write() {
         let mut file = File::open_inode(&fs, inode).unwrap();
         file.seek_to(7 * 1024 * 1024).await.unwrap();
         let mut buf = vec![0u8; 1024 * 1024];
-        let n = file.read_bytes(&mut buf).await.unwrap();
-        assert_eq!(n, 1024 * 1024);
+        let mut total_read = 0;
+        while total_read < buf.len() {
+            let n = file.read_bytes(&mut buf[total_read..]).await.unwrap();
+            assert!(n > 0);
+            total_read += n;
+        }
+        assert_eq!(total_read, buf.len());
         assert_eq!(&buf, &vec![b'B'; 1024 * 1024]);
     }
 }

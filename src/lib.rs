@@ -776,6 +776,7 @@ impl Ext4 {
                 .unwrap();
                 return Ok(block_index);
             }
+            bg_id = bg_id.saturating_add(1);
         }
         Err(Ext4Error::NoSpace)
     }
