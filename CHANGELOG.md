@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## 0.1.0-alpha.4
 
 - BREAKING: `Dir` now uses `inode()` and `inode_mut()` instead of `AsRef` and `AsMut` for consistent API with `File`.
 - `Dir::open` (deprecated for now) has become `Dir::open_inode`
