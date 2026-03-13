@@ -1485,7 +1485,6 @@ mod tests {
     }
 
     #[tokio::test]
-    // #[ignore]
     async fn test_extent_tree_internal_nodes_checksum_mismatch_is_detected() {
         let fs = load_test_disk1_rw().await;
         let ext4 = fs.0.clone();
