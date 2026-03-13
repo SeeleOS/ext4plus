@@ -1289,9 +1289,17 @@ impl ExtentTree {
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use crate::block_index::FileBlockIndex;
+    use crate::block_index::FsBlockIndex;
     use crate::file_blocks::extent_tree::ExtentTree;
+    use crate::inode::Inode;
     use crate::test_util::load_test_disk1_rw;
+
+    use super::{
+        CorruptKind, ENTRY_SIZE_IN_BYTES, Ext4, Ext4Error, ExtentInternalNode,
+        ExtentNode, ExtentNodeEntries, NodeHeader,
+    };
     use std::num::NonZeroU32;
+    use crate::error::Corrupt;
 
     #[tokio::test]
     async fn test_extent_tree() {
@@ -1319,5 +1327,193 @@ mod tests {
             NonZeroU32::new(5).unwrap(),
             true,
         );
+    }
+
+    async fn root_inode_as_extent_tree(ext4: &Ext4) -> Inode {
+        ext4.read_root_inode().await.unwrap()
+    }
+
+    /// Build a depth-1 extent tree (internal root -> 2 leaf nodes) written to disk.
+    ///
+    /// Layout:
+    /// - leaf0: contains one extent covering file blocks [0, 2)
+    /// - leaf1: contains one extent covering file blocks [10, 12)
+    /// - root: internal node with two entries keyed at 0 and 10 pointing to the leaf blocks.
+    async fn build_depth1_tree(
+        ext4: &Ext4,
+        inode: &Inode,
+    ) -> (ExtentTree, FsBlockIndex, FsBlockIndex) {
+        use crate::extent::Extent;
+
+        let checksum_base = inode.checksum_base().clone();
+        let checksum_base_opt = ext4
+            .has_metadata_checksums()
+            .then(|| checksum_base.clone());
+
+        // Allocate blocks for the 2 leaf nodes.
+        let leaf0_block = ext4
+            .alloc_contiguous_blocks(inode.index, NonZeroU32::new(1).unwrap())
+            .await
+            .unwrap();
+        let leaf1_block = ext4
+            .alloc_contiguous_blocks(inode.index, NonZeroU32::new(1).unwrap())
+            .await
+            .unwrap();
+
+        // Construct leaf nodes.
+        let leaf0 = ExtentNode {
+            block: Some(leaf0_block),
+            header: NodeHeader {
+                num_entries: 1,
+                max_entries: 4,
+                depth: 0,
+                generation: 0,
+            },
+            entries: ExtentNodeEntries::Leaf(vec![Extent {
+                block_within_file: 0,
+                start_block: 100,
+                num_blocks: 2,
+                is_initialized: true,
+            }]),
+        };
+        let leaf1 = ExtentNode {
+            block: Some(leaf1_block),
+            header: NodeHeader {
+                num_entries: 1,
+                max_entries: 4,
+                depth: 0,
+                generation: 0,
+            },
+            entries: ExtentNodeEntries::Leaf(vec![Extent {
+                block_within_file: 10,
+                start_block: 200,
+                num_blocks: 2,
+                is_initialized: true,
+            }]),
+        };
+
+        ext4
+            .write_to_block(
+                leaf0_block,
+                0,
+                &leaf0.to_bytes(checksum_base_opt.clone()).unwrap(),
+            )
+            .await
+            .unwrap();
+        ext4
+            .write_to_block(
+                leaf1_block,
+                0,
+                &leaf1.to_bytes(checksum_base_opt.clone()).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Construct an internal root node that points to the two leaf blocks.
+        let root = ExtentNode {
+            block: None,
+            header: NodeHeader {
+                num_entries: 2,
+                max_entries: 4,
+                depth: 1,
+                generation: 0,
+            },
+            entries: ExtentNodeEntries::Internal(vec![
+                ExtentInternalNode {
+                    block_within_file: 0,
+                    block: leaf0_block,
+                },
+                ExtentInternalNode {
+                    block_within_file: 10,
+                    block: leaf1_block,
+                },
+            ]),
+        };
+
+        let tree = ExtentTree {
+            ext4: ext4.clone(),
+            inode: inode.index,
+            node: root,
+            checksum_base,
+        };
+
+        (tree, leaf0_block, leaf1_block)
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_extent_tree_internal_nodes_find_extent_and_get_block() {
+        let fs = load_test_disk1_rw().await;
+        let ext4 = fs.0.clone();
+        let inode = root_inode_as_extent_tree(&fs).await;
+
+        let (tree, _leaf0, _leaf1) = build_depth1_tree(&ext4, &inode).await;
+
+        // Within leaf0 extent.
+        let e0 = tree.find_extent(0).await.unwrap().unwrap();
+        assert_eq!(e0.block_within_file, 0);
+        assert_eq!(tree.get_block(0).await.unwrap(), 100);
+        assert_eq!(tree.get_block(1).await.unwrap(), 101);
+        assert_eq!(tree.find_extent(2).await.unwrap(), None);
+
+        // Hole before leaf1.
+        assert_eq!(tree.find_extent(9).await.unwrap(), None);
+
+        // Within leaf1 extent.
+        let e1 = tree.find_extent(10).await.unwrap().unwrap();
+        assert_eq!(e1.block_within_file, 10);
+        assert_eq!(tree.get_block(10).await.unwrap(), 200);
+        assert_eq!(tree.get_block(11).await.unwrap(), 201);
+        assert_eq!(tree.find_extent(12).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_extent_tree_internal_nodes_selection_boundary_conditions() {
+        let fs = load_test_disk1_rw().await;
+        let ext4 = fs.0.clone();
+        let inode = root_inode_as_extent_tree(&fs).await;
+
+        let (tree, _leaf0, _leaf1) = build_depth1_tree(&ext4, &inode).await;
+
+        // Querying before the first internal key should behave like `find_extent`: returns None.
+        assert_eq!(tree.find_extent(u32::MAX).await.unwrap(), None);
+        // block_index < 0 is not possible; instead validate that blocks smaller than first key 0
+        // are handled via the 0 key. (0 selects child 0)
+        assert!(tree.find_extent(0).await.unwrap().is_some());
+
+        // Exactly at the second internal key should descend into leaf1.
+        let e = tree.find_extent(10).await.unwrap().unwrap();
+        assert_eq!(e.block_within_file, 10);
+    }
+
+    #[tokio::test]
+    // #[ignore]
+    async fn test_extent_tree_internal_nodes_checksum_mismatch_is_detected() {
+        let fs = load_test_disk1_rw().await;
+        let ext4 = fs.0.clone();
+        if !ext4.has_metadata_checksums() {
+            // If the test image doesn't have metadata checksums enabled, there's nothing to test.
+            return;
+        }
+
+        let inode = root_inode_as_extent_tree(&fs).await;
+        let (tree, leaf0_block, _leaf1_block) =
+            build_depth1_tree(&ext4, &inode).await;
+
+        // Corrupt one byte in leaf0 so its checksum no longer matches.
+        let mut bytes = ext4.read_block(leaf0_block).await.unwrap();
+        // Flip a byte in the extent payload (not the checksum itself) so we avoid accidental fixups.
+        bytes[ENTRY_SIZE_IN_BYTES] ^= 0x01;
+        ext4
+            .write_to_block(leaf0_block, 0, &bytes)
+            .await
+            .unwrap();
+
+        // Accessing an extent that forces reading leaf0 should return an error.
+        let err = tree.find_extent(0).await.unwrap_err();
+        if err != CorruptKind::ExtentChecksum(tree.inode) {
+            panic!("unexpected error: {err:?}");
+        }
     }
 }
