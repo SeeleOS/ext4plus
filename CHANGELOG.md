@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Disable writing when unsupported RO features are present to prevent corruption.
+
 ## 0.1.0-alpha.6
 
 - BREAKING: `AsyncIterator::collect` functions like `Iterator::collect` now and requires a generic type parameter.

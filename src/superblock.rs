@@ -214,6 +214,14 @@ impl Superblock {
         })
     }
 
+    pub(crate) fn read_only(&self) -> bool {
+        self.incompatible_features
+            .contains(IncompatibleFeatures::RECOVERY)
+            || !check_read_only_compat_features(
+                self.read_only_compatible_features.bits(),
+            )
+    }
+
     fn to_bytes(&self) -> [u8; Self::SIZE_IN_BYTES_ON_DISK] {
         if !self
             .read_only_compatible_features
@@ -350,6 +358,26 @@ fn check_incompat_features(
     }
 
     Ok(actual)
+}
+
+fn check_read_only_compat_features(s_feature_ro_compat: u32) -> bool {
+    let actual =
+        ReadOnlyCompatibleFeatures::from_bits_retain(s_feature_ro_compat);
+    let actual_known =
+        ReadOnlyCompatibleFeatures::from_bits_truncate(s_feature_ro_compat);
+    if actual != actual_known {
+        return false;
+    }
+    let disallowed_features = ReadOnlyCompatibleFeatures::BTREE_DIR
+        | ReadOnlyCompatibleFeatures::GROUP_DESCRIPTOR_CHECKSUMS
+        | ReadOnlyCompatibleFeatures::QUOTA
+        | ReadOnlyCompatibleFeatures::PROJECT_QUOTAS
+        | ReadOnlyCompatibleFeatures::BIG_ALLOC;
+    let present_disallowed = actual & disallowed_features;
+    if !present_disallowed.is_empty() {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]

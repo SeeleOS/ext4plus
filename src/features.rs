@@ -80,5 +80,7 @@ bitflags! {
     #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
     pub struct CompatibleFeatures: u32 {
         const HAS_JOURNAL = 0x4;
+        const EXT_ATTR = 0x8;
+        const DIR_INDEX = 0x20;
     }
 }

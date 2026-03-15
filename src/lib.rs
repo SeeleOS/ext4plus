@@ -216,7 +216,7 @@ impl Ext4 {
     #[maybe_async::maybe_async]
     pub async fn load_with_writer(
         mut reader: Box<dyn Ext4Read>,
-        writer: Option<Box<dyn Ext4Write>>,
+        mut writer: Option<Box<dyn Ext4Write>>,
     ) -> Result<Self, Ext4Error> {
         // The first 1024 bytes are reserved for "weird" stuff like x86
         // boot sectors.
@@ -229,6 +229,9 @@ impl Ext4 {
 
         let superblock = Superblock::from_bytes(&data)?;
 
+        if superblock.read_only() {
+            writer = None;
+        }
         let mut fs = Self(Arc::new(Ext4Inner {
             block_group_descriptors: BlockGroupDescriptor::read_all(
                 &superblock,
