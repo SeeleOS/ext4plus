@@ -10,9 +10,73 @@ The crate is `no_std`, so it can be used in embedded or osdev contexts. However,
 
 This project is a hard fork of [ext4-view-rs](https://github.com/nicholasbishop/ext4-view-rs/),
 which is a read-only ext4 library.
-The goal of this fork is to add write and async support, which requires some significant changes to the API and internal design.
+The goal of this fork was to add write and async support, which required some significant changes to the API and internal design.
 
 Additionally, due to the need for more low-level access to the filesystem, this crate exposes a greater API surface.
+
+The two APIs that are exposed are the "raw" API, which is intended for OS drivers,
+and the "std::fs" API, which replicates the standard library's `std::fs` API as closely as possible.
+
+## Sync vs Async
+
+While this library is async-first, sync APIs are provided via the `sync` feature.
+This has known limitations due to features needing to be additive, but it should be sufficient for most use cases.
+
+## Limitations
+
+- Lack of write support to htree directories. Disabling the htree feature would help.
+- Lack of write support for journaling, although journaling can be read. It is recommended to disable journaling when using this library.
+- No support for reading or writing extended attributes (xattrs) (by extension ACLs and SELinux labels).
+
+Everything else should be fully supported, minus the features listed in the compatibility section below.
+
+### Compatibility
+
+incompatible:
+------------
+
+* filetype: **required**
+* recover, extents, 64bit, bg_meta_csum, flex_bg: **yes**
+* compression, journal_dev, meta_bg, mmp, ea_inode, dirdata, largedir, inline_data: **no**
+
+compatible:
+------------
+
+* has_journal, ext_attr, dir_index: **yes**
+* dir_prealloc, imagic_inodes, resize_inode: **no**
+
+read-only:
+------------
+
+* sparse_super, large_file, huge_file, dir_nlink, extra_isize, metadata_csum: **yes**
+* btree_dir, gdt_csum, quota, project_quotas, bigalloc: **no**
+
+### Roadmap
+
+Near-term goals (pre-0.1.0):
+
+- htree directory write support
+- stability/more testing
+
+Goals that are also being worked on, but are not necessarily pre-0.1.0:
+
+- extended attribute support
+- inline data support
+- journaling write support
+- gdt checksum support
+
+Future goals:
+
+- quota support
+- journal device support
+- mmp support
+- compression support
+
+Non-goals:
+
+- Support for undocumented features or ones that are not widely used, such as the "imagic inodes" feature.
+- `no_alloc` support
+- Locking support, this library expects the consumer to bring their own locking and synchronization due to it being `no_std`.
 
 ## License
 
