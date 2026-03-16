@@ -834,6 +834,7 @@ impl Ext4 {
         self.write_to_block(block_index, 0, &zeroes).await
     }
 
+    #[expect(unused)]
     #[maybe_async::maybe_async]
     pub(crate) async fn clear_blocks(
         &self,
