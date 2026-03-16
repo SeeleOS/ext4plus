@@ -102,6 +102,9 @@ pub enum Ext4Error {
     /// Already exists
     AlreadyExists,
 
+    /// Operation is not supported by the current filesystem
+    NotSupported,
+
     /// Cannot delete "." or ".." directory entries.
     DotEntry,
 }
@@ -145,6 +148,10 @@ impl Display for Ext4Error {
             Self::Readonly => write!(f, "filesystem is read-only"),
             Self::NoSpace => write!(f, "no space left on device"),
             Self::AlreadyExists => write!(f, "file already exists"),
+            Self::NotSupported => write!(
+                f,
+                "operation is not supported by the current filesystem"
+            ),
             Self::DotEntry => {
                 write!(f, "cannot delete \".\" or \"..\" directory entry")
             }
@@ -170,6 +177,7 @@ impl From<Ext4Error> for std::io::Error {
             | Ext4Error::Incompatible(_)
             | Ext4Error::PathTooLong
             | Ext4Error::TooManySymlinks
+            | Ext4Error::NotSupported
             | Ext4Error::DotEntry => Self::other(e),
 
             Ext4Error::FileTooLarge => FileTooLarge.into(),
@@ -316,6 +324,12 @@ pub(crate) enum CorruptKind {
 
     /// The number of blocks in a block-map file exceeds 2^32.
     TooManyBlocksInFile,
+
+    /// An xattr block has an invalid header.
+    XattrHeader,
+
+    /// An xattr entry is invalid.
+    XattrEntry,
 
     /// Invalid block access in block-map file.
     BlockMap(u32),
@@ -507,6 +521,8 @@ impl Display for CorruptKind {
                 write!(f, "inode {inode} has an invalid symlink path")
             }
             Self::TooManyBlocksInFile => write!(f, "too many blocks in file"),
+            Self::XattrHeader => write!(f, "invalid xattr block header"),
+            Self::XattrEntry => write!(f, "invalid xattr entry"),
             Self::BlockMap(block) => {
                 write!(
                     f,

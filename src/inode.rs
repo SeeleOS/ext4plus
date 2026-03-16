@@ -449,6 +449,23 @@ impl Inode {
         }
     }
 
+    pub(crate) fn inline_xattr_space(&self) -> u16 {
+        u16::try_from(
+            self.inode_data.len() - usize::from(self.entry_size().get()),
+        )
+        .unwrap()
+    }
+
+    pub(crate) fn inline_xattr(&self) -> &[u8] {
+        let offset = usize::from(self.entry_size().get());
+        &self.inode_data[offset..]
+    }
+
+    pub(crate) fn set_inline_xattr(&mut self, bytes: &[u8]) {
+        let offset = usize::from(self.entry_size().get());
+        self.inode_data[offset..offset + bytes.len()].copy_from_slice(bytes);
+    }
+
     /// Get the number of blocks in the file.
     ///
     /// If the file size is not an even multiple of the block size,
@@ -694,6 +711,25 @@ impl Inode {
     /// Set the inode's links count.
     pub fn set_links_count(&mut self, links_count: u16) {
         write_u16le(&mut self.inode_data, 0x1a, links_count);
+    }
+
+    /// Get xattr location
+    pub fn xattr_location(&self) -> u64 {
+        let i_file_acl_lo = read_u32le(&self.inode_data, 0x68);
+        let l_i_file_acl_high =
+            u32::from(read_u16le(&self.inode_data, 0x74 + 0x2));
+        u64_from_hilo(l_i_file_acl_high, i_file_acl_lo)
+    }
+
+    /// Set xattr location
+    pub fn set_xattr_location(&mut self, xattr_location: u64) {
+        let (l_i_file_acl_high, i_file_acl_lo) = u64_to_hilo(xattr_location);
+        write_u32le(&mut self.inode_data, 0x68, i_file_acl_lo);
+        write_u16le(
+            &mut self.inode_data,
+            0x74 + 0x2,
+            u16::try_from(l_i_file_acl_high).unwrap(),
+        );
     }
 
     /// Get the inode's metadata.

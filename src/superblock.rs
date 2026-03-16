@@ -28,6 +28,7 @@ pub(crate) struct Superblock {
     inodes_per_block_group: NonZeroU32,
     block_group_descriptor_size: u16,
     num_block_groups: u32,
+    compatible_features: CompatibleFeatures,
     incompatible_features: IncompatibleFeatures,
     read_only_compatible_features: ReadOnlyCompatibleFeatures,
     checksum_seed: u32,
@@ -203,6 +204,7 @@ impl Superblock {
             inodes_per_block_group,
             block_group_descriptor_size,
             num_block_groups,
+            compatible_features,
             incompatible_features,
             read_only_compatible_features,
             checksum_seed,
@@ -285,6 +287,10 @@ impl Superblock {
         &self,
     ) -> ReadOnlyCompatibleFeatures {
         self.read_only_compatible_features
+    }
+
+    pub(crate) fn compatible_features(&self) -> CompatibleFeatures {
+        self.compatible_features
     }
 
     pub(crate) fn checksum_seed(&self) -> u32 {
@@ -412,6 +418,7 @@ mod tests {
                         | ReadOnlyCompatibleFeatures::LARGE_DIRECTORIES
                         | ReadOnlyCompatibleFeatures::LARGE_INODES
                         | ReadOnlyCompatibleFeatures::METADATA_CHECKSUMS,
+                compatible_features: CompatibleFeatures::HAS_JOURNAL,
                 checksum_seed: 0xfd3cc0be,
                 htree_hash_seed: [
                     0xbb071441, 0x7746982f, 0x6007bb8f, 0xb61a9b7
