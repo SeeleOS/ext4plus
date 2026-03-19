@@ -4,6 +4,7 @@
 
 - Disable writing when unsupported RO features are present to prevent corruption.
 - fsck fixes
+    - Includes fixes that prevent data loss, generally allows better interop with other drivers due to checksum fixes
 
 ## 0.1.0-alpha.6
 
