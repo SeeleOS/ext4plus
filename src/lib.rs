@@ -481,7 +481,8 @@ impl Ext4 {
         block_group_index: BlockGroupIndex,
         bitmap_handle: BitmapHandle,
     ) -> Result<(), Ext4Error> {
-        let checksum = bitmap_handle.calc_checksum(self).await?;
+        let checksum =
+            bitmap_handle.calc_checksum(self, block_group_index).await?;
         let block_group = self.get_block_group_descriptor(block_group_index);
         block_group.set_block_bitmap_checksum(checksum);
         block_group.write(self).await?;
@@ -494,7 +495,8 @@ impl Ext4 {
         block_group_index: BlockGroupIndex,
         bitmap_handle: BitmapHandle,
     ) -> Result<(), Ext4Error> {
-        let checksum = bitmap_handle.calc_checksum(self).await?;
+        let checksum =
+            bitmap_handle.calc_checksum(self, block_group_index).await?;
         let block_group = self.get_block_group_descriptor(block_group_index);
         block_group.set_inode_bitmap_checksum(checksum);
         block_group.write(self).await?;

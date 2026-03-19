@@ -141,11 +141,13 @@ impl BitmapHandle {
     pub(crate) async fn calc_checksum(
         &self,
         ext4: &Ext4,
+        block_group_index: u32,
     ) -> Result<u32, Ext4Error> {
         let mut dst = vec![0; ext4.0.superblock.block_size().to_usize()];
         ext4.read_from_block(self.block, 0, &mut dst).await?;
         let mut checksum =
             Checksum::with_seed(ext4.0.superblock.checksum_seed());
+        checksum.update_u32_le(block_group_index);
         checksum.update(&dst);
         Ok(checksum.finalize())
     }
