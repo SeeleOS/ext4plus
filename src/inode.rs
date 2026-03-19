@@ -571,10 +571,43 @@ impl Inode {
     }
 
     /// Set the number of blocks allocated to the inode.
-    pub fn set_blocks(&mut self, blocks: u64) {
+    pub(crate) fn set_blocks(&mut self, blocks: u64) {
         let (i_blocks_high, i_blocks_lo) = u64_to_hilo(blocks);
         write_u32le(&mut self.inode_data, 0x1c, i_blocks_lo);
         write_u32le(&mut self.inode_data, 0x74, i_blocks_high);
+    }
+
+    /// Get the number of filesystem blocks allocated to the inode.
+    ///
+    /// This abstracts away the difference between "blocks" and "filesystem blocks" for the caller.
+    pub fn fs_blocks(&self, ext4: &Ext4) -> Result<u64, Ext4Error> {
+        let real_blocks = self.blocks();
+        if self.flags().contains(InodeFlags::HUGE_FILE) {
+            Ok(real_blocks)
+        } else {
+            Ok(real_blocks
+                .checked_mul(ext4.0.superblock.block_size().to_u64() / 512)
+                .ok_or(CorruptKind::TooManyBlocksInFile)?)
+        }
+    }
+
+    /// Set the number of filesystem blocks allocated to the inode.
+    ///
+    /// This abstracts away the difference between "blocks" and "filesystem blocks" for the caller.
+    pub fn set_fs_blocks(
+        &mut self,
+        blocks: u64,
+        ext4: &Ext4,
+    ) -> Result<u64, Ext4Error> {
+        let real_blocks = if self.flags().contains(InodeFlags::HUGE_FILE) {
+            blocks
+        } else {
+            blocks
+                .checked_div(ext4.0.superblock.block_size().to_u64() / 512)
+                .ok_or(CorruptKind::TooManyBlocksInFile)?
+        };
+        self.set_blocks(real_blocks);
+        Ok(real_blocks)
     }
 
     /// Get the inode's access time.

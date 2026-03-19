@@ -332,12 +332,13 @@ async fn write_at_block_map(
                 // Hole: need to allocate a block.
                 let new_fs_block = ext4.alloc_block(inode.index).await?;
                 block_map.set_block(start_block, new_fs_block).await?;
-                inode.set_blocks(
+                inode.set_fs_blocks(
                     inode
-                        .blocks()
+                        .fs_blocks(ext4)?
                         .checked_add(1)
                         .ok_or(Ext4Error::FileTooLarge)?,
-                );
+                    ext4,
+                )?;
                 inode.set_inline_data(block_map.to_bytes());
                 inode.write(ext4).await?;
                 new_fs_block
@@ -377,7 +378,10 @@ async fn write_at_block_map(
                         new_fs_block,
                     )
                     .await?;
-                inode.set_blocks(inode.blocks().checked_add(1).unwrap());
+                inode.set_fs_blocks(
+                    inode.fs_blocks(ext4)?.checked_add(1).unwrap(),
+                    ext4,
+                )?;
                 inode.set_inline_data(block_map.to_bytes());
                 inode.write(ext4).await?;
                 new_fs_block
@@ -807,12 +811,13 @@ async fn write_at_extent(
                     u16::try_from(tried_blocks).unwrap(),
                 );
                 extent_tree.insert_extent(new_extent).await?;
-                inode.set_blocks(
+                inode.set_fs_blocks(
                     inode
-                        .blocks()
+                        .fs_blocks(ext4)?
                         .checked_add(u64_from_usize(tried_blocks))
                         .unwrap(),
-                );
+                    ext4,
+                )?;
                 // Write data into the newly allocated blocks (same logic as initialized extents except we don't need to read old content)
                 // If first or last block is partial, zero the unwritten parts.
                 let want_bytes = bytes_for_blocks(
@@ -929,9 +934,13 @@ pub async fn truncate(
                                 .await?;
                             }
                         }
-                        inode.set_blocks(
-                            inode.blocks().checked_sub(u64::from(len)).unwrap(),
-                        );
+                        inode.set_fs_blocks(
+                            inode
+                                .fs_blocks(ext4)?
+                                .checked_sub(u64::from(len))
+                                .unwrap(),
+                            ext4,
+                        )?;
                     }
                 }
             } else {
@@ -942,12 +951,13 @@ pub async fn truncate(
                     );
                 let freed =
                     block_map.remove_range(drop_from, drop_count).await?;
-                inode.set_blocks(
+                inode.set_fs_blocks(
                     inode
-                        .blocks()
+                        .fs_blocks(ext4)?
                         .checked_sub(u64_from_usize(freed.len()))
                         .unwrap(),
-                );
+                    ext4,
+                )?;
                 inode.set_inline_data(block_map.to_bytes());
                 for blk in freed {
                     if blk != 0 {
