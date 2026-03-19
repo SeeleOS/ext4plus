@@ -23,6 +23,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 pub(crate) struct Superblock {
     block_size: BlockSize,
     blocks_count: u64,
+    first_data_block: u32,
     free_inodes_count: AtomicU32,
     inode_size: u16,
     inodes_per_block_group: NonZeroU32,
@@ -43,6 +44,7 @@ impl PartialEq for Superblock {
     fn eq(&self, other: &Self) -> bool {
         self.block_size == other.block_size
             && self.blocks_count == other.blocks_count
+            && self.first_data_block == other.first_data_block
             && self.inode_size == other.inode_size
             && self.inodes_per_block_group == other.inodes_per_block_group
             && self.block_group_descriptor_size
@@ -198,6 +200,7 @@ impl Superblock {
         Ok(Self {
             block_size,
             blocks_count,
+            first_data_block: s_first_data_block,
             free_inodes_count: AtomicU32::new(s_free_inodes_count),
             inode_size: s_inode_size,
             inodes_per_block_group,
@@ -259,6 +262,10 @@ impl Superblock {
 
     pub(crate) fn blocks_count(&self) -> u64 {
         self.blocks_count
+    }
+
+    pub(crate) fn first_data_block(&self) -> u32 {
+        self.first_data_block
     }
 
     pub(crate) fn inode_size(&self) -> u16 {
@@ -394,6 +401,7 @@ mod tests {
             Superblock {
                 block_size: BlockSize::from_superblock_value(0).unwrap(),
                 blocks_count: 128,
+                first_data_block: 1,
                 free_inodes_count: AtomicU32::new(0), // TODO: not checked
                 inode_size: 256,
                 inodes_per_block_group: NonZero::new(16).unwrap(),

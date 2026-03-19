@@ -731,6 +731,10 @@ impl Ext4 {
                     )
                     .unwrap()
                     .checked_add(u64::from(block_num))
+                    .unwrap()
+                    .checked_add(u64::from(
+                        self.0.superblock.first_data_block(),
+                    ))
                     .unwrap();
 
                 return Ok(block_index);
@@ -794,6 +798,8 @@ impl Ext4 {
                     )
                     .unwrap())
                 .checked_add(u64::from(block_num))
+                .unwrap()
+                .checked_add(u64::from(self.0.superblock.first_data_block()))
                 .unwrap();
                 return Ok(block_index);
             }
