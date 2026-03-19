@@ -285,6 +285,12 @@ impl Ext4 {
             .contains(ReadOnlyCompatibleFeatures::METADATA_CHECKSUMS)
     }
 
+    /// Get a reference to the superblock.
+    #[must_use]
+    pub fn superblock(&self) -> &Superblock {
+        &self.0.superblock
+    }
+
     /// Read the inode of the root `/` directory.
     #[maybe_async::maybe_async]
     pub async fn read_root_inode(&self) -> Result<Inode, Ext4Error> {
@@ -680,6 +686,8 @@ impl Ext4 {
         let free_blocks = bg.free_blocks_count();
         bg.set_free_blocks_count(free_blocks.checked_sub(1).unwrap());
         bg.write(self).await?;
+        self.0.superblock.dec_free_blocks_count(1);
+        self.0.superblock.write(self).await?;
         Ok(())
     }
 
@@ -722,6 +730,8 @@ impl Ext4 {
                     free_blocks.checked_sub(1u32).unwrap(),
                 );
                 bg.write(self).await?;
+                self.0.superblock.dec_free_blocks_count(1);
+                self.0.superblock.write(self).await?;
 
                 // Zero out the new block
                 let block_index = u64::from(bg_id)
@@ -791,6 +801,10 @@ impl Ext4 {
                     free_blocks.checked_sub(num_blocks.get()).unwrap(),
                 );
                 bg.write(self).await?;
+                self.0
+                    .superblock
+                    .dec_free_blocks_count(u64::from(num_blocks.get()));
+                self.0.superblock.write(self).await?;
                 let block_index = (u64::from(bg_id)
                     .checked_mul(
                         NonZeroU64::from(self.0.superblock.blocks_per_group())
@@ -882,6 +896,8 @@ impl Ext4 {
         let free_blocks = bg.free_blocks_count();
         bg.set_free_blocks_count(free_blocks.saturating_add(1));
         bg.write(self).await?;
+        self.0.superblock.inc_free_blocks_count(1);
+        self.0.superblock.write(self).await?;
         Ok(())
     }
 
@@ -914,6 +930,10 @@ impl Ext4 {
             free_blocks.checked_add(num_blocks.get()).unwrap(),
         );
         bg.write(self).await?;
+        self.0
+            .superblock
+            .inc_free_blocks_count(u64::from(num_blocks.get()));
+        self.0.superblock.write(self).await?;
         Ok(())
     }
 

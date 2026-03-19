@@ -13,17 +13,20 @@ use crate::features::{
     CompatibleFeatures, IncompatibleFeatures, ReadOnlyCompatibleFeatures,
 };
 use crate::inode::InodeIndex;
-use crate::util::{read_u16le, read_u32le, u64_from_hilo, write_u32le};
+use crate::util::{
+    read_u16le, read_u32le, u64_from_hilo, u64_to_hilo, write_u32le,
+};
 use crate::{Ext4, Label, Uuid};
 use core::num::NonZeroU32;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Information about the filesystem.
 #[derive(Debug)]
-pub(crate) struct Superblock {
+pub struct Superblock {
     block_size: BlockSize,
     blocks_count: u64,
     first_data_block: u32,
+    free_blocks_count: AtomicU64,
     free_inodes_count: AtomicU32,
     inode_size: u16,
     inodes_per_block_group: NonZeroU32,
@@ -76,6 +79,7 @@ impl Superblock {
 
         // OK to unwrap: already checked the length.
         let s_blocks_count_lo = read_u32le(bytes, 0x4);
+        let s_free_blocks_count_lo = read_u32le(bytes, 0xC);
         let s_free_inodes_count = read_u32le(bytes, 0x10);
         let s_first_data_block = read_u32le(bytes, 0x14);
         let s_log_block_size = read_u32le(bytes, 0x18);
@@ -98,11 +102,14 @@ impl Superblock {
         ];
         let s_desc_size = read_u16le(bytes, 0xfe);
         let s_blocks_count_hi = read_u32le(bytes, 0x150);
+        let s_free_blocks_count_hi = read_u32le(bytes, 0x158);
         let s_checksum_seed = read_u32le(bytes, 0x270);
         const S_CHECKSUM_OFFSET: usize = 0x3fc;
         let s_checksum = read_u32le(bytes, S_CHECKSUM_OFFSET);
 
         let blocks_count = u64_from_hilo(s_blocks_count_hi, s_blocks_count_lo);
+        let free_blocks_count =
+            u64_from_hilo(s_free_blocks_count_hi, s_free_blocks_count_lo);
 
         let block_size = BlockSize::from_superblock_value(s_log_block_size)
             .ok_or(CorruptKind::InvalidBlockSize)?;
@@ -201,6 +208,7 @@ impl Superblock {
             block_size,
             blocks_count,
             first_data_block: s_first_data_block,
+            free_blocks_count: AtomicU64::new(free_blocks_count),
             free_inodes_count: AtomicU32::new(s_free_inodes_count),
             inode_size: s_inode_size,
             inodes_per_block_group,
@@ -239,6 +247,11 @@ impl Superblock {
             0x10,
             self.free_inodes_count.load(Ordering::Relaxed),
         );
+        let (free_blocks_hi, free_blocks_lo) =
+            u64_to_hilo(self.free_blocks_count.load(Ordering::Relaxed));
+        write_u32le(&mut data, 0xC, free_blocks_lo);
+        write_u32le(&mut data, 0x158, free_blocks_hi);
+
         let mut checksum = Checksum::new();
         checksum.update(&data[..0x3fc]);
         let checksum_bytes = checksum.finalize().to_le_bytes();
@@ -326,6 +339,24 @@ impl Superblock {
     pub(crate) fn set_free_inodes_count(&self, count: u32) {
         self.free_inodes_count.store(count, Ordering::Relaxed);
     }
+
+    #[expect(unused)]
+    pub(crate) fn free_blocks_count(&self) -> u64 {
+        self.free_blocks_count.load(Ordering::Relaxed)
+    }
+
+    #[expect(unused)]
+    pub(crate) fn set_free_blocks_count(&self, count: u64) {
+        self.free_blocks_count.store(count, Ordering::Relaxed);
+    }
+
+    pub(crate) fn inc_free_blocks_count(&self, amount: u64) {
+        self.free_blocks_count.fetch_add(amount, Ordering::Relaxed);
+    }
+
+    pub(crate) fn dec_free_blocks_count(&self, amount: u64) {
+        self.free_blocks_count.fetch_sub(amount, Ordering::Relaxed);
+    }
 }
 
 fn check_incompat_features(
@@ -402,6 +433,7 @@ mod tests {
                 block_size: BlockSize::from_superblock_value(0).unwrap(),
                 blocks_count: 128,
                 first_data_block: 1,
+                free_blocks_count: AtomicU64::new(105),
                 free_inodes_count: AtomicU32::new(0), // TODO: not checked
                 inode_size: 256,
                 inodes_per_block_group: NonZero::new(16).unwrap(),
