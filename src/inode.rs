@@ -586,7 +586,7 @@ impl Inode {
             Ok(real_blocks)
         } else {
             Ok(real_blocks
-                .checked_mul(ext4.0.superblock.block_size().to_u64() / 512)
+                .checked_div(ext4.0.superblock.block_size().to_u64() / 512)
                 .ok_or(CorruptKind::TooManyBlocksInFile)?)
         }
     }
@@ -603,7 +603,7 @@ impl Inode {
             blocks
         } else {
             blocks
-                .checked_div(ext4.0.superblock.block_size().to_u64() / 512)
+                .checked_mul(ext4.0.superblock.block_size().to_u64() / 512)
                 .ok_or(CorruptKind::TooManyBlocksInFile)?
         };
         self.set_blocks(real_blocks);
