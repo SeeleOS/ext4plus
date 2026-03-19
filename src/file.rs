@@ -929,6 +929,12 @@ pub async fn truncate(
                                 .await?;
                             }
                         }
+                        inode.set_blocks(
+                            inode
+                                .blocks()
+                                .checked_sub(u64::from(len))
+                                .unwrap(),
+                        );
                     }
                 }
             } else {
@@ -939,6 +945,12 @@ pub async fn truncate(
                     );
                 let freed =
                     block_map.remove_range(drop_from, drop_count).await?;
+                inode.set_blocks(
+                    inode
+                        .blocks()
+                        .checked_sub(u64_from_usize(freed.len()))
+                        .unwrap(),
+                );
                 inode.set_inline_data(block_map.to_bytes());
                 for blk in freed {
                     if blk != 0 {
