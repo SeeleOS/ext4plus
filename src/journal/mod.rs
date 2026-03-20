@@ -54,6 +54,11 @@ impl Journal {
         Ok(Self { block_map })
     }
 
+    /// Write all pending to the journal to the filesystem, and clear the journal.
+    pub(crate) async fn init_rw(&mut self, fs: &Ext4) -> Result<(), Ext4Error> {
+        todo!("Implement journal replay");
+    }
+
     /// Map from an absolute block index to a block in the journal.
     ///
     /// If the journal does not contain a replacement for the input
