@@ -165,6 +165,7 @@ use iters::file_blocks::FileBlocks;
 use journal::Journal;
 use path::{Path, PathBuf};
 use superblock::Superblock;
+use sync::RwLock;
 use util::{u64_from_usize, usize_from_u32};
 
 pub use dir_entry::{DirEntry, DirEntryName, DirEntryNameError};
@@ -183,7 +184,7 @@ pub use writer::Ext4Write;
 struct Ext4Inner {
     superblock: Superblock,
     block_group_descriptors: Vec<BlockGroupDescriptor>,
-    journal: Journal,
+    journal: RwLock<Journal>,
 
     /// Reader providing access to the underlying storage.
     ///
@@ -244,12 +245,12 @@ impl Ext4 {
             superblock,
             // Initialize with an empty journal, because loading the
             // journal requires a valid `Ext4` object.
-            journal: Journal::empty(),
+            journal: RwLock::new(Journal::empty()),
         }));
 
         // Load the actual journal, if present.
         let journal = Journal::load(&fs).await?;
-        Arc::get_mut(&mut fs.0).unwrap().journal = journal;
+        Arc::get_mut(&mut fs.0).unwrap().journal = RwLock::new(journal);
 
         Ok(fs)
     }
@@ -325,7 +326,7 @@ impl Ext4 {
         offset_within_block: u32,
         dst: &mut [u8],
     ) -> Result<(), Ext4Error> {
-        let block_index = self.0.journal.map_block_index(original_block_index);
+        let block_index = self.0.journal.read().await.map_block_index(original_block_index);
 
         let err = || {
             Ext4Error::from(CorruptKind::BlockRead {
@@ -399,7 +400,7 @@ impl Ext4 {
         offset_within_block: u32,
         src: &[u8],
     ) -> Result<(), Ext4Error> {
-        let block_index = self.0.journal.map_block_index(original_block_index);
+        let block_index = self.0.journal.read().await.map_block_index(original_block_index);
 
         let err = || {
             Ext4Error::from(CorruptKind::BlockWrite {
