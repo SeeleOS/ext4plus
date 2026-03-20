@@ -5,6 +5,7 @@
 // <LICENSE-MIT or https://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+//! Superblock structure and related functionality.
 
 use crate::block_size::BlockSize;
 use crate::checksum::Checksum;
@@ -277,7 +278,9 @@ impl Superblock {
         self.block_size
     }
 
-    pub(crate) fn blocks_count(&self) -> u64 {
+    /// The total number of blocks in the filesystem, including data blocks,
+    /// metadata blocks, and reserved blocks.
+    pub fn blocks_count(&self) -> u64 {
         self.blocks_count
     }
 
@@ -327,11 +330,13 @@ impl Superblock {
         self.journal_inode
     }
 
-    pub(crate) fn label(&self) -> &Label {
+    /// The volume label.
+    pub fn label(&self) -> &Label {
         &self.label
     }
 
-    pub(crate) fn uuid(&self) -> Uuid {
+    /// The filesystem uuid.
+    pub fn uuid(&self) -> Uuid {
         self.uuid
     }
 
@@ -340,7 +345,8 @@ impl Superblock {
             .expect("blocks per group cannot be zero")
     }
 
-    pub(crate) fn free_inodes_count(&self) -> u32 {
+    /// Number of free inodes in the filesystem
+    pub fn free_inodes_count(&self) -> u32 {
         self.free_inodes_count.load(Ordering::Relaxed)
     }
 
@@ -348,8 +354,8 @@ impl Superblock {
         self.free_inodes_count.store(count, Ordering::Relaxed);
     }
 
-    #[expect(unused)]
-    pub(crate) fn free_blocks_count(&self) -> u64 {
+    /// Number of free blocks in the filesystem
+    pub fn free_blocks_count(&self) -> u64 {
         self.free_blocks_count.load(Ordering::Relaxed)
     }
 

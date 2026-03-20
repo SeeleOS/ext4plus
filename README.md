@@ -30,6 +30,8 @@ This has known limitations due to features needing to be additive, but it should
 
 Everything else should be fully supported, minus the features listed in the compatibility section below.
 
+
+
 ### Compatibility
 
 incompatible:
@@ -76,7 +78,6 @@ Non-goals:
 
 - Support for undocumented features or ones that are not widely used, such as the "imagic inodes" feature.
 - `no_alloc` support
-- Locking support, this library expects the consumer to bring their own locking and synchronization due to it being `no_std`.
 
 ## License
 
