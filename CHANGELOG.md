@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.1.0-alpha.7
+
 - BREAKING: Hide `Inode::set_blocks`
 - Add `ext4plus::sync` to export sync primitives.
 - Add `Ext4::superblock` to get a reference to the superblock for more advanced use cases.
