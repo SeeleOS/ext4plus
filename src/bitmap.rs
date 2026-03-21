@@ -147,7 +147,6 @@ impl BitmapHandle {
         ext4.read_from_block(self.block, 0, &mut dst).await?;
         let mut checksum =
             Checksum::with_seed(ext4.0.superblock.checksum_seed());
-        checksum.update_u32_le(block_group_index);
         checksum.update(&dst);
         Ok(checksum.finalize())
     }
