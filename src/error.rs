@@ -246,6 +246,15 @@ pub(crate) enum CorruptKind {
         u32,
     ),
 
+    /// Too many unused inodes in the block group descriptor
+    BlockGroupDescriptorTooManyUnusedInodes {
+        /// Block group number.
+        block_group_num: u32,
+
+        /// Number of unused inodes in the block group descriptor.
+        num_unused_inodes: u32,
+    },
+
     /// Journal size is invalid.
     JournalSize,
 
@@ -432,6 +441,13 @@ impl Display for CorruptKind {
             Self::BlockGroupDescriptorChecksum(block_group_num) => write!(
                 f,
                 "invalid checksum for block group descriptor {block_group_num}"
+            ),
+            Self::BlockGroupDescriptorTooManyUnusedInodes {
+                block_group_num,
+                num_unused_inodes,
+            } => write!(
+                f,
+                "block group descriptor {block_group_num} has too many unused inodes: {num_unused_inodes}"
             ),
             Self::JournalSize => {
                 write!(f, "journal size is invalid")

@@ -250,6 +250,7 @@ impl Ext4 {
 
         // Load the actual journal, if present.
         let journal = Journal::load(&fs).await?;
+        // OK to unwrap: the journal is stored in an `Arc`, but we haven't cloned it yet, so we have unique access to it.
         Arc::get_mut(&mut fs.0).unwrap().journal = journal;
 
         Ok(fs)
@@ -296,6 +297,7 @@ impl Ext4 {
     /// Read the inode of the root `/` directory.
     #[maybe_async::maybe_async]
     pub async fn read_root_inode(&self) -> Result<Inode, Ext4Error> {
+        // OK to unwrap: infallible
         let root_inode_index = InodeIndex::new(2).unwrap();
         Inode::read(self, root_inode_index).await
     }
@@ -369,9 +371,9 @@ impl Ext4 {
             .read(
                 block_index
                     .checked_mul(self.0.superblock.block_size().to_u64())
-                    .unwrap()
+                    .ok_or(CorruptKind::InvalidBlockSize)?
                     .checked_add(u64::from(offset_within_block))
-                    .unwrap(),
+                    .ok_or(CorruptKind::InvalidBlockSize)?,
                 dst,
             )
             .await
@@ -442,9 +444,9 @@ impl Ext4 {
                 .write(
                     block_index
                         .checked_mul(self.0.superblock.block_size().to_u64())
-                        .unwrap()
+                        .ok_or(CorruptKind::InvalidBlockSize)?
                         .checked_add(u64::from(offset_within_block))
-                        .unwrap(),
+                        .ok_or(CorruptKind::InvalidBlockSize)?,
                     src,
                 )
                 .await
@@ -570,9 +572,19 @@ impl Ext4 {
                     .inodes_per_block_group()
                     .get()
                     .checked_sub(bg.unused_inodes_count())
-                    .unwrap()
+                    .ok_or(
+                        CorruptKind::BlockGroupDescriptorTooManyUnusedInodes {
+                            block_group_num: bg_id,
+                            num_unused_inodes: bg.unused_inodes_count(),
+                        },
+                    )?
                     .checked_sub(1)
-                    .unwrap()
+                    .ok_or(
+                        CorruptKind::BlockGroupDescriptorTooManyUnusedInodes {
+                            block_group_num: bg_id,
+                            num_unused_inodes: bg.unused_inodes_count(),
+                        },
+                    )?
                     <= inode_num
                 {
                     bg.set_unused_inodes_count(
