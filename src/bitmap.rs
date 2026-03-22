@@ -71,13 +71,15 @@ impl BitmapHandle {
                 if dst[0] != 0 {
                     for bit_index in 0..8 {
                         if (dst[0] & (1 << bit_index)) != 0 {
-                            return Ok(Some(
-                                byte_index
-                                    .checked_mul(8)
-                                    .unwrap()
-                                    .checked_add(bit_index)
-                                    .unwrap(),
-                            ));
+                            let index = byte_index
+                                .checked_mul(8)
+                                .unwrap()
+                                .checked_add(bit_index)
+                                .unwrap();
+                            if !range.contains(&(index)) {
+                                continue;
+                            }
+                            return Ok(Some(index));
                         }
                     }
                 }
