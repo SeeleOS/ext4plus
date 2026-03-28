@@ -64,27 +64,29 @@ async fn test_write_into_hole() {
 )]
 async fn test_write_basic() {
     // Load filesystem with writer.
-    let fs = load_test_disk1_rw().await;
+    let fses = [load_test_disk1_rw().await, load_ext2_rw().await];
 
-    // Small file is "hello, world!" (13 bytes) and fits in a single block.
-    let mut file = fs.open("/small_file").await.unwrap();
+    for fs in fses {
+        // Small file is "hello, world!" (13 bytes) and fits in a single block.
+        let mut file = fs.open("/small_file").await.unwrap();
 
-    // Seek near end and attempt to write more than remaining.
-    file.seek_to(12).await.unwrap();
-    let written = file.write_bytes(b". We're writing").await.unwrap();
+        // Seek near end and attempt to write more than remaining.
+        file.seek_to(12).await.unwrap();
+        let written = file.write_bytes(b". We're writing").await.unwrap();
 
-    // Everything should be written up
-    assert_eq!(written, 15);
-    assert_eq!(file.position(), 27);
-    file.seek_to(0).await.unwrap();
-    // Verify file contents
-    let mut buf = vec![0u8; 27];
-    let n = file.read_bytes(&mut buf).await.unwrap();
-    assert_eq!(n, 27);
-    assert_eq!(&buf, b"hello, world. We're writing");
-    // File contents should be "hello, worABCDEFGHIJ"
-    let data = fs.read("/small_file").await.unwrap();
-    assert_eq!(&data, b"hello, world. We're writing");
+        // Everything should be written up
+        assert_eq!(written, 15);
+        assert_eq!(file.position(), 27);
+        file.seek_to(0).await.unwrap();
+        // Verify file contents
+        let mut buf = vec![0u8; 27];
+        let n = file.read_bytes(&mut buf).await.unwrap();
+        assert_eq!(n, 27);
+        assert_eq!(&buf, b"hello, world. We're writing");
+        // File contents should be "hello, worABCDEFGHIJ"
+        let data = fs.read("/small_file").await.unwrap();
+        assert_eq!(&data, b"hello, world. We're writing");
+    }
 }
 
 #[maybe_async::test(
@@ -190,28 +192,36 @@ async fn test_inode_creation() {
     async(not(feature = "sync"), tokio::test)
 )]
 async fn test_inode_deletion() {
-    let fs = load_test_disk1_rw().await;
+    let fses = [load_test_disk1_rw().await, load_ext2_rw().await];
 
-    let root_inode = fs
-        .path_to_inode(Path::try_from("/").unwrap(), FollowSymlinks::All)
-        .await
-        .unwrap();
-    let root_dir = Dir::open_inode(&fs.0, root_inode).unwrap();
-    let empty_inode = fs
-        .path_to_inode("/empty_file".try_into().unwrap(), FollowSymlinks::All)
-        .await
-        .unwrap();
-    let inode = root_dir
-        .unlink(DirEntryName::try_from(b"empty_file").unwrap(), empty_inode)
-        .await
-        .unwrap();
-    assert!(inode.is_none());
-    // Ensure the file is no longer visible.
-    let err = fs
-        .path_to_inode("/empty_file".try_into().unwrap(), FollowSymlinks::All)
-        .await
-        .unwrap_err();
-    assert!(matches!(err, Ext4Error::NotFound));
+    for fs in fses {
+        let root_inode = fs
+            .path_to_inode(Path::try_from("/").unwrap(), FollowSymlinks::All)
+            .await
+            .unwrap();
+        let root_dir = Dir::open_inode(&fs.0, root_inode).unwrap();
+        let empty_inode = fs
+            .path_to_inode(
+                "/small_file".try_into().unwrap(),
+                FollowSymlinks::All,
+            )
+            .await
+            .unwrap();
+        let inode = root_dir
+            .unlink(DirEntryName::try_from(b"small_file").unwrap(), empty_inode)
+            .await
+            .unwrap();
+        assert!(inode.is_none());
+        // Ensure the file is no longer visible.
+        let err = fs
+            .path_to_inode(
+                "/small_file".try_into().unwrap(),
+                FollowSymlinks::All,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Ext4Error::NotFound));
+    }
 }
 
 #[maybe_async::test(
