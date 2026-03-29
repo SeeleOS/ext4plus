@@ -77,7 +77,8 @@ pub(crate) async fn add_dir_entry_non_htree(
         return Err(Ext4Error::Encrypted);
     }
     if dir_inode.flags().contains(InodeFlags::DIRECTORY_HTREE) {
-        return Err(Ext4Error::Readonly);
+        return add_dir_entry_htree(fs, dir_inode, name, inode, file_type)
+            .await;
     }
 
     // Fail if name already exists.
@@ -263,7 +264,7 @@ pub(crate) async fn remove_dir_entry_non_htree(
         return Err(Ext4Error::Encrypted);
     }
     if dir_inode.flags().contains(InodeFlags::DIRECTORY_HTREE) {
-        return Err(Ext4Error::Readonly);
+        return remove_dir_entry_htree(fs, dir_inode, name).await;
     }
 
     let block_size = fs.0.superblock.block_size().to_usize();
@@ -734,4 +735,208 @@ mod tests {
         let err = lookup("does_not_exist").await.unwrap_err();
         assert!(matches!(err, Ext4Error::NotFound));
     }
+}
+/// Add an item to a directory with an htree.
+#[maybe_async::maybe_async]
+pub(crate) async fn add_dir_entry_htree(
+    fs: &Ext4,
+    dir_inode: &mut Inode,
+    name: DirEntryName<'_>,
+    inode: InodeIndex,
+    file_type: FileType,
+) -> Result<(), Ext4Error> {
+    assert!(dir_inode.file_type().is_dir());
+
+    if dir_inode.flags().contains(InodeFlags::DIRECTORY_ENCRYPTED) {
+        return Err(Ext4Error::Encrypted);
+    }
+
+    // Fail if name already exists.
+    if get_dir_entry_inode_by_name(fs, dir_inode, name)
+        .await
+        .is_ok()
+    {
+        return Err(Ext4Error::AlreadyExists);
+    }
+
+    let block_size = fs.0.superblock.block_size().to_usize();
+    let mut block_buf = vec![0u8; block_size];
+
+    crate::dir_htree::read_root_block(fs, dir_inode, &mut block_buf).await?;
+
+    let (leaf_absolute_block, _leaf_relative_block) =
+        crate::dir_htree::find_leaf_node(fs, dir_inode, name, &mut block_buf)
+            .await?;
+
+    let need = dir_entry_min_size(name.as_ref().len());
+
+    let mut off = 0usize;
+    let mut found_space = false;
+
+    while off < block_size {
+        let inode_field = read_u32le(&block_buf, off);
+        let rec_len = read_u16le(&block_buf, off.checked_add(4).unwrap());
+        let rec_len_usize = usize::from(rec_len);
+
+        if rec_len_usize < 8 || off.checked_add(rec_len_usize).is_none() {
+            return Err(CorruptKind::DirEntry(dir_inode.index).into());
+        }
+        if off.checked_add(rec_len_usize).unwrap() > block_size {
+            return Err(CorruptKind::DirEntry(dir_inode.index).into());
+        }
+
+        let used = if inode_field == 0 {
+            0usize
+        } else {
+            let name_len = usize::from(block_buf[off.checked_add(6).unwrap()]);
+            dir_entry_min_size(name_len)
+        };
+
+        if rec_len_usize >= used.checked_add(need).unwrap() {
+            let new_rec_len_for_curr =
+                if inode_field == 0 { 0usize } else { used };
+            let free_start = off.checked_add(new_rec_len_for_curr).unwrap();
+            let free_len =
+                rec_len_usize.checked_sub(new_rec_len_for_curr).unwrap();
+
+            if free_len < need {
+                off = off.checked_add(rec_len_usize).unwrap();
+                continue;
+            }
+
+            if inode_field != 0 {
+                write_u16le(
+                    &mut block_buf,
+                    off.checked_add(4).unwrap(),
+                    u16::try_from(new_rec_len_for_curr).unwrap(),
+                );
+            } else {
+                write_u16le(
+                    &mut block_buf,
+                    off.checked_add(4).unwrap(),
+                    u16::try_from(rec_len_usize).unwrap(),
+                );
+            }
+
+            write_dir_entry_bytes(
+                &mut block_buf,
+                free_start,
+                free_len,
+                inode,
+                name,
+                file_type,
+            )?;
+
+            DirBlock {
+                fs,
+                block_index: leaf_absolute_block,
+                is_first: false,
+                dir_inode: dir_inode.index,
+                has_htree: true,
+                checksum_base: dir_inode.checksum_base().clone(),
+            }
+            .update_checksum(&mut block_buf)?;
+
+            fs.write_to_block(leaf_absolute_block, 0, &block_buf)
+                .await?;
+            found_space = true;
+            break;
+        }
+
+        off = off.checked_add(rec_len_usize).unwrap();
+    }
+
+    if !found_space {
+        return Err(Ext4Error::NoSpace);
+    }
+
+    Ok(())
+}
+
+/// Remove an item from a directory with an htree.
+#[maybe_async::maybe_async]
+pub(crate) async fn remove_dir_entry_htree(
+    fs: &Ext4,
+    dir_inode: &mut Inode,
+    name: DirEntryName<'_>,
+) -> Result<(), Ext4Error> {
+    assert!(dir_inode.file_type().is_dir());
+
+    if dir_inode.flags().contains(InodeFlags::DIRECTORY_ENCRYPTED) {
+        return Err(Ext4Error::Encrypted);
+    }
+
+    let block_size = fs.0.superblock.block_size().to_usize();
+    let mut block_buf = vec![0u8; block_size];
+
+    crate::dir_htree::read_root_block(fs, dir_inode, &mut block_buf).await?;
+
+    let (leaf_absolute_block, _leaf_relative_block) =
+        crate::dir_htree::find_leaf_node(fs, dir_inode, name, &mut block_buf)
+            .await?;
+
+    let mut off = 0usize;
+    let mut prev_off: Option<usize> = None;
+
+    while off < block_size {
+        let inode_field = read_u32le(&block_buf, off);
+        let rec_len = read_u16le(&block_buf, off.checked_add(4).unwrap());
+        let rec_len_usize = usize::from(rec_len);
+
+        if rec_len_usize < 8
+            || off.checked_add(rec_len_usize).unwrap() > block_size
+        {
+            return Err(CorruptKind::DirEntry(dir_inode.index).into());
+        }
+
+        if inode_field != 0 {
+            let name_len = usize::from(block_buf[off.checked_add(6).unwrap()]);
+            let name_start = off.checked_add(8).unwrap();
+            let name_end = name_start.checked_add(name_len).unwrap();
+            if name_end > off.checked_add(rec_len_usize).unwrap() {
+                return Err(CorruptKind::DirEntry(dir_inode.index).into());
+            }
+
+            if block_buf[name_start..name_end] == *name.as_ref() {
+                if name.as_ref() == b"." || name.as_ref() == b".." {
+                    return Err(Ext4Error::Readonly);
+                }
+
+                if let Some(poff) = prev_off {
+                    let prev_rec_len =
+                        read_u16le(&block_buf, poff.checked_add(4).unwrap());
+                    let new_len = usize::from(prev_rec_len)
+                        .checked_add(rec_len_usize)
+                        .unwrap();
+                    write_u16le(
+                        &mut block_buf,
+                        poff.checked_add(4).unwrap(),
+                        u16::try_from(new_len).unwrap(),
+                    );
+                    write_u32le(&mut block_buf, off, 0);
+                } else {
+                    write_u32le(&mut block_buf, off, 0);
+                }
+
+                DirBlock {
+                    fs,
+                    block_index: leaf_absolute_block,
+                    is_first: false,
+                    dir_inode: dir_inode.index,
+                    has_htree: true,
+                    checksum_base: dir_inode.checksum_base().clone(),
+                }
+                .update_checksum(&mut block_buf)?;
+
+                fs.write_to_block(leaf_absolute_block, 0, &block_buf)
+                    .await?;
+                return Ok(());
+            }
+        }
+
+        prev_off = Some(off);
+        off = off.checked_add(rec_len_usize).unwrap();
+    }
+
+    Err(Ext4Error::NotFound)
 }

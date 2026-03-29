@@ -719,3 +719,32 @@ async fn test_many_dir_entries() {
         }
     }
 }
+#[maybe_async::test(
+    feature = "sync",
+    async(not(feature = "sync"), tokio::test)
+)]
+async fn test_htree_write() {
+    let fs = load_test_disk1_rw().await;
+    let big_dir = fs
+        .path_to_inode(Path::new("/big_dir".as_bytes()), FollowSymlinks::All)
+        .await
+        .unwrap();
+    let mut dir = Dir::open_inode(&fs.0, big_dir).unwrap();
+    let mut new_inode = fs
+        .create_inode(InodeCreationOptions {
+            file_type: FileType::Regular,
+            mode: InodeMode::S_IRUSR | InodeMode::S_IWUSR | InodeMode::S_IFREG,
+            uid: 0,
+            gid: 0,
+            time: Default::default(),
+            flags: InodeFlags::empty(),
+        })
+        .await
+        .unwrap();
+    dir.link(
+        DirEntryName::try_from("new_file".as_bytes()).unwrap(),
+        &mut new_inode,
+    )
+    .await
+    .unwrap();
+}

@@ -182,7 +182,7 @@ impl<'a> InternalNode<'a> {
 /// Read the block containing the root node of an htree into
 /// `block`. This is always the first block of the file.
 #[maybe_async::maybe_async]
-async fn read_root_block(
+pub(crate) async fn read_root_block(
     fs: &Ext4,
     inode: &Inode,
     block: &mut [u8],
@@ -299,12 +299,18 @@ async fn block_from_file_block(
 /// On success, `block` will contain the leaf node's directory block
 /// data.
 #[maybe_async::maybe_async]
-async fn find_leaf_node(
+pub(crate) async fn find_leaf_node(
     fs: &Ext4,
     inode: &Inode,
     name: DirEntryName<'_>,
     block: &mut [u8],
-) -> Result<(), Ext4Error> {
+) -> Result<
+    (
+        crate::block_index::FsBlockIndex,
+        crate::block_index::FileBlockIndex,
+    ),
+    Ext4Error,
+> {
     // Read the htree's hash type from the root block.
     let hash_alg = HashAlg::from_u8(block[0x1c])?;
 
@@ -322,6 +328,8 @@ async fn find_leaf_node(
         .lookup_block_by_hash(hash)
         .ok_or(CorruptKind::DirEntry(inode.index))?;
 
+    let mut leaf_absolute_block = 0;
+
     // Descend through the tree one level at a time. The first iteration
     // of the loop goes from the root node to a child. The last
     // iteration (which may also be the first iteration) will read the
@@ -330,6 +338,7 @@ async fn find_leaf_node(
         // Get the absolute block index and read the block's data.
         let block_index =
             block_from_file_block(fs, inode, child_block_relative).await?;
+        leaf_absolute_block = block_index;
         let dir_block = DirBlock {
             fs,
             dir_inode: inode.index,
@@ -352,7 +361,7 @@ async fn find_leaf_node(
         }
     }
 
-    Ok(())
+    Ok((leaf_absolute_block, child_block_relative))
 }
 
 /// Find a directory entry via a directory htree. The htree is a tree of
@@ -386,7 +395,7 @@ pub(crate) async fn get_dir_entry_via_htree(
 
     // Find the leaf node that might contain the entry. This will update
     // `block` to contain the leaf node's block data.
-    find_leaf_node(fs, inode, name, &mut block).await?;
+    let _ = find_leaf_node(fs, inode, name, &mut block).await?;
 
     // The entry's `path()` method will not be called, so the value of
     // the base path does not matter.

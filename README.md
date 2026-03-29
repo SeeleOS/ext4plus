@@ -24,7 +24,6 @@ This has known limitations due to features needing to be additive, but it should
 
 ## Limitations
 
-- Lack of write support to htree directories. Disabling the htree feature would help.
 - Lack of write support for journaling, although journaling can be read. It is recommended to disable journaling when using this library.
 - No support for reading or writing extended attributes (xattrs) (by extension ACLs and SELinux labels).
 
