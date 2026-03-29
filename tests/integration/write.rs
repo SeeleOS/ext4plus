@@ -200,13 +200,16 @@ async fn test_inode_deletion() {
             .await
             .unwrap();
         let root_dir = Dir::open_inode(&fs.0, root_inode).unwrap();
-        let empty_inode = fs
+        let mut empty_inode = fs
             .path_to_inode(
                 "/small_file".try_into().unwrap(),
                 FollowSymlinks::All,
             )
             .await
             .unwrap();
+        // Set dtime to make fsck happy
+        empty_inode.set_dtime(core::time::Duration::new(5000, 0));
+        empty_inode.write(&fs).await.unwrap();
         let inode = root_dir
             .unlink(DirEntryName::try_from(b"small_file").unwrap(), empty_inode)
             .await

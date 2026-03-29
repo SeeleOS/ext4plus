@@ -331,12 +331,15 @@ async fn write_at_block_map(
             0 => {
                 // Hole: need to allocate a block.
                 let new_fs_block = ext4.alloc_block(inode.index).await?;
-                block_map.set_block(start_block, new_fs_block).await?;
+                let metadata_blocks =
+                    block_map.set_block(start_block, new_fs_block).await?;
                 inode.set_fs_blocks(
                     inode
                         .fs_blocks(ext4)?
                         .checked_add(1)
-                        .ok_or(Ext4Error::FileTooLarge)?,
+                        .ok_or(Ext4Error::FileTooLarge)?
+                        .checked_add(u64::from(metadata_blocks))
+                        .unwrap(),
                     ext4,
                 )?;
                 inode.set_inline_data(block_map.to_bytes());
@@ -370,7 +373,7 @@ async fn write_at_block_map(
             0 => {
                 // Hole: need to allocate a block.
                 let new_fs_block = ext4.alloc_block(inode.index).await?;
-                block_map
+                let metadata_blocks = block_map
                     .set_block(
                         start_block
                             .checked_add(1)
@@ -379,7 +382,12 @@ async fn write_at_block_map(
                     )
                     .await?;
                 inode.set_fs_blocks(
-                    inode.fs_blocks(ext4)?.checked_add(1).unwrap(),
+                    inode
+                        .fs_blocks(ext4)?
+                        .checked_add(1)
+                        .unwrap()
+                        .checked_add(u64::from(metadata_blocks))
+                        .unwrap(),
                     ext4,
                 )?;
                 inode.set_inline_data(block_map.to_bytes());
@@ -782,11 +790,14 @@ async fn write_at_extent(
                     Extent::allocate(inode.index, current_block, to_try, ext4)
                         .await?;
                 let tried_blocks = new_extent.num_blocks;
-                extent_tree.insert_extent(new_extent).await?;
+                let metadata_blocks =
+                    extent_tree.insert_extent(new_extent).await?;
                 inode.set_fs_blocks(
                     inode
                         .fs_blocks(ext4)?
                         .checked_add(u64::from(tried_blocks))
+                        .unwrap()
+                        .checked_add(u64::from(metadata_blocks))
                         .unwrap(),
                     ext4,
                 )?;

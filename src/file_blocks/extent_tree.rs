@@ -441,14 +441,17 @@ impl ExtentTree {
         &mut self,
         block_index: FileBlockIndex,
         inode_index: InodeIndex,
-    ) -> Result<FsBlockIndex, Ext4Error> {
+    ) -> Result<(FsBlockIndex, u32), Ext4Error> {
         if let Some(extent) = self.find_extent(block_index).await? {
             let offset_within_extent =
                 block_index.checked_sub(extent.block_within_file).unwrap();
-            return Ok(extent
-                .start_block
-                .checked_add(FsBlockIndex::from(offset_within_extent))
-                .unwrap());
+            return Ok((
+                extent
+                    .start_block
+                    .checked_add(FsBlockIndex::from(offset_within_extent))
+                    .unwrap(),
+                0,
+            ));
         }
 
         let new_block =
@@ -461,12 +464,15 @@ impl ExtentTree {
             is_initialized: true,
         };
 
-        if let Err(e) = self.insert_extent(extent).await {
-            self.ext4.free_block(new_block).await?;
-            return Err(e);
-        }
+        let metadata_blocks = match self.insert_extent(extent).await {
+            Ok(metadata_blocks) => metadata_blocks,
+            Err(e) => {
+                self.ext4.free_block(new_block).await?;
+                return Err(e);
+            }
+        };
 
-        Ok(new_block)
+        Ok((new_block, metadata_blocks))
     }
 
     /// Find the previous/next extents that border a block.
@@ -707,7 +713,7 @@ impl ExtentTree {
     pub(crate) async fn insert_extent(
         &mut self,
         new_extent: Extent,
-    ) -> Result<(), Ext4Error> {
+    ) -> Result<u32, Ext4Error> {
         // Only handle the simplest case for now: the root node is an inline leaf.
         if self.node.header.depth != 0 {
             todo!()
@@ -724,7 +730,7 @@ impl ExtentTree {
             }
             extents.push(new_extent);
             self.node.header.num_entries = 1;
-            return Ok(());
+            return Ok(0);
         }
 
         let new_start = new_extent.block_within_file;
@@ -857,7 +863,7 @@ impl ExtentTree {
         }
 
         self.node.header.num_entries = u16::try_from(extents.len()).unwrap();
-        Ok(())
+        Ok(0)
     }
 
     /// Remove all extents that overlap file-block range [start, start+num_blocks)

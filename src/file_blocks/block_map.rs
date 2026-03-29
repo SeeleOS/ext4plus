@@ -300,12 +300,15 @@ impl BlockMap {
         }
     }
 
+    /// Set the mapping for a file block index to a filesystem block index, allocating
+    /// any necessary metadata blocks. Returns the number of allocated metadata blocks.
     #[maybe_async::maybe_async]
     pub(crate) async fn set_block(
         &mut self,
         file_block_index: FileBlockIndex,
         fs_block_index: FsBlockIndex,
-    ) -> Result<(), Ext4Error> {
+    ) -> Result<u32, Ext4Error> {
+        let mut allocated_metadata_blocks: u32 = 0;
         let blocks_per_block =
             NonZeroUsize::new(self.fs.0.superblock.block_size().to_usize() / 4)
                 .unwrap();
@@ -323,6 +326,8 @@ impl BlockMap {
                 // TODO: make block allocation u32 but actually where the inode is
                 let new_block_index =
                     self.fs.alloc_block(NonZeroU32::new(1).unwrap()).await?;
+                allocated_metadata_blocks =
+                    allocated_metadata_blocks.checked_add(1).unwrap();
                 self.single_indirect_block = IndirectBlock::new(BlockIndex(
                     u32::try_from(new_block_index).unwrap(),
                 ));
@@ -356,6 +361,8 @@ impl BlockMap {
             if self.double_indirect_block.block_index.value() == 0 {
                 let new_block_index =
                     self.fs.alloc_block(NonZeroU32::new(1).unwrap()).await?;
+                allocated_metadata_blocks =
+                    allocated_metadata_blocks.checked_add(1).unwrap();
                 self.double_indirect_block = IndirectBlock::new(BlockIndex(
                     u32::try_from(new_block_index).unwrap(),
                 ));
@@ -367,6 +374,8 @@ impl BlockMap {
             if first_level_block.block_index.value() == 0 {
                 let new_block_index =
                     self.fs.alloc_block(NonZeroU32::new(1).unwrap()).await?;
+                allocated_metadata_blocks =
+                    allocated_metadata_blocks.checked_add(1).unwrap();
                 first_level_block = IndirectBlock::new(BlockIndex(
                     u32::try_from(new_block_index).unwrap(),
                 ));
@@ -426,6 +435,8 @@ impl BlockMap {
             if self.triple_indirect_block.block_index.value() == 0 {
                 let new_block_index =
                     self.fs.alloc_block(NonZeroU32::new(1).unwrap()).await?;
+                allocated_metadata_blocks =
+                    allocated_metadata_blocks.checked_add(1).unwrap();
                 self.triple_indirect_block = IndirectBlock::new(BlockIndex(
                     u32::try_from(new_block_index).unwrap(),
                 ));
@@ -437,6 +448,8 @@ impl BlockMap {
             if first_level_block.block_index.value() == 0 {
                 let new_block_index =
                     self.fs.alloc_block(NonZeroU32::new(1).unwrap()).await?;
+                allocated_metadata_blocks =
+                    allocated_metadata_blocks.checked_add(1).unwrap();
                 first_level_block = IndirectBlock::new(BlockIndex(
                     u32::try_from(new_block_index).unwrap(),
                 ));
@@ -453,6 +466,8 @@ impl BlockMap {
             if second_level_block.block_index.value() == 0 {
                 let new_block_index =
                     self.fs.alloc_block(NonZeroU32::new(1).unwrap()).await?;
+                allocated_metadata_blocks =
+                    allocated_metadata_blocks.checked_add(1).unwrap();
                 second_level_block = IndirectBlock::new(BlockIndex(
                     u32::try_from(new_block_index).unwrap(),
                 ));
@@ -475,7 +490,7 @@ impl BlockMap {
             // TODO: proper error
             return Err(Ext4Error::FileTooLarge);
         }
-        Ok(())
+        Ok(allocated_metadata_blocks)
     }
 
     #[maybe_async::maybe_async]
@@ -483,11 +498,12 @@ impl BlockMap {
         &mut self,
         file_block_index: FileBlockIndex,
         inode_index: InodeIndex,
-    ) -> Result<FsBlockIndex, Ext4Error> {
+    ) -> Result<(FsBlockIndex, u32), Ext4Error> {
         let new_block_index =
             self.fs.alloc_block(NonZeroU32::new(1).unwrap()).await?;
-        self.set_block(file_block_index, new_block_index).await?;
-        Ok(new_block_index)
+        let metadata_blocks =
+            self.set_block(file_block_index, new_block_index).await?;
+        Ok((new_block_index, metadata_blocks))
     }
 
     /// Clear a range of file blocks from the mapping and return the corresponding

@@ -60,12 +60,14 @@ impl FileBlocks {
         }
     }
 
+    /// Allocate a block for the file at `block_index`,
+    /// and return the index of the allocated block and the number of metadata blocks allocated.
     #[maybe_async::maybe_async]
     pub(crate) async fn allocate_block(
         &mut self,
         block_index: FileBlockIndex,
         inode_index: InodeIndex,
-    ) -> Result<FsBlockIndex, Ext4Error> {
+    ) -> Result<(FsBlockIndex, u32), Ext4Error> {
         match self {
             Self::ExtentTree(extent_tree) => {
                 extent_tree.allocate_block(block_index, inode_index).await
