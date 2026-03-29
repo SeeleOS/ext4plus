@@ -689,6 +689,16 @@ impl Inode {
         write_u32le(&mut self.inode_data, 0x14, i_dtime);
     }
 
+    /// Get the inode's delete time directly from a raw value, without converting to/from `Duration`.
+    pub fn dtime_val(&self) -> u32 {
+        read_u32le(&self.inode_data, 0x14)
+    }
+
+    /// Set the inode's delete time directly from a raw value, without converting to/from `Duration`.
+    pub fn set_dtime_val(&mut self, dtime: u32) {
+        write_u32le(&mut self.inode_data, 0x14, dtime);
+    }
+
     /// Get the inode's creation time, if available.
     #[must_use]
     pub fn crtime(&self) -> Option<Duration> {
