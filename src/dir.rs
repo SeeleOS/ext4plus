@@ -12,7 +12,7 @@ use crate::dir_block::DirBlock;
 use crate::dir_entry::DirEntryName;
 use crate::dir_htree::get_dir_entry_via_htree;
 use crate::error::{CorruptKind, Ext4Error};
-use crate::file::write_at;
+use crate::file::{truncate, write_at};
 use crate::file_type::FileType;
 use crate::inode::{Inode, InodeFlags, InodeIndex};
 #[cfg(not(feature = "sync"))]
@@ -237,7 +237,8 @@ pub(crate) async fn add_dir_entry_non_htree(
         .update_checksum(&mut new_block_buf)?;
     }
 
-    let n = write_at(fs, dir_inode, &new_block_buf, dir_inode.size_in_bytes()).await?;
+    let n = write_at(fs, dir_inode, &new_block_buf, dir_inode.size_in_bytes())
+        .await?;
     if n != new_block_buf.len() {
         return Err(Ext4Error::NoSpace);
     }
@@ -253,7 +254,7 @@ pub(crate) async fn add_dir_entry_non_htree(
 #[maybe_async::maybe_async]
 pub(crate) async fn remove_dir_entry_non_htree(
     fs: &Ext4,
-    dir_inode: &Inode,
+    dir_inode: &mut Inode,
     name: DirEntryName<'_>,
 ) -> Result<(), Ext4Error> {
     assert!(dir_inode.file_type().is_dir());
@@ -270,6 +271,7 @@ pub(crate) async fn remove_dir_entry_non_htree(
     let mut block_buf = vec![0u8; block_size];
 
     let mut is_first = true;
+    let mut logical_block_index = 0u64;
 
     while let Some(block_index_res) = file_blocks.next().await {
         let block_index = block_index_res?;
@@ -329,6 +331,45 @@ pub(crate) async fn remove_dir_entry_non_htree(
                         write_u32le(&mut block_buf, off, 0);
                     }
 
+                    // Check if this block is entirely empty
+                    let mut all_empty = true;
+                    let mut verify_off = 0usize;
+                    while verify_off < block_size {
+                        let inode_field = read_u32le(&block_buf, verify_off);
+                        let rec_len = read_u16le(
+                            &block_buf,
+                            verify_off.checked_add(4).unwrap(),
+                        );
+                        let rec_len_usize = usize::from(rec_len);
+                        if rec_len_usize == 0 {
+                            break;
+                        }
+                        if inode_field != 0 {
+                            all_empty = false;
+                            break;
+                        }
+                        verify_off =
+                            verify_off.checked_add(rec_len_usize).unwrap();
+                    }
+
+                    let file_blocks_count =
+                        (dir_inode.size_in_bytes() + block_size as u64 - 1)
+                            / block_size as u64;
+
+                    if all_empty
+                        && logical_block_index == file_blocks_count - 1
+                        && logical_block_index > 0
+                    {
+                        // Truncate the file to remove the last empty block.
+                        truncate(
+                            fs,
+                            dir_inode,
+                            logical_block_index * block_size as u64,
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+
                     // If metadata checksums are enabled, update the directory block checksum tail.
                     DirBlock {
                         fs,
@@ -350,6 +391,7 @@ pub(crate) async fn remove_dir_entry_non_htree(
         }
 
         is_first = false;
+        logical_block_index += 1;
     }
 
     Err(Ext4Error::NotFound)
@@ -619,7 +661,7 @@ impl Dir {
     /// * The entry is "." or ".." (`DotEntry`)
     #[maybe_async::maybe_async]
     pub async fn unlink(
-        &self,
+        &mut self,
         name: DirEntryName<'_>,
         mut inode: Inode,
     ) -> Result<Option<Inode>, Ext4Error> {
@@ -629,7 +671,7 @@ impl Dir {
         let old = inode.links_count();
         inode.set_links_count(old.saturating_sub(1));
         inode.write(&self.fs).await?;
-        remove_dir_entry_non_htree(&self.fs, &self.inode, name).await?;
+        remove_dir_entry_non_htree(&self.fs, &mut self.inode, name).await?;
         if inode.links_count() == 0 {
             self.fs.delete_file(inode).await?;
             Ok(None)

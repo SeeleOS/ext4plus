@@ -199,7 +199,7 @@ async fn test_inode_deletion() {
             .path_to_inode(Path::try_from("/").unwrap(), FollowSymlinks::All)
             .await
             .unwrap();
-        let root_dir = Dir::open_inode(&fs.0, root_inode).unwrap();
+        let mut root_dir = Dir::open_inode(&fs.0, root_inode).unwrap();
         let mut empty_inode = fs
             .path_to_inode(
                 "/small_file".try_into().unwrap(),
@@ -682,10 +682,40 @@ async fn test_many_dir_entries() {
         for i in 0..100 {
             let name = format!("file_{:03}", i);
             let inode = fs
-                .path_to_inode(Path::new(("/".to_string() + &name).as_bytes()), FollowSymlinks::All)
+                .path_to_inode(
+                    Path::new(("/".to_string() + &name).as_bytes()),
+                    FollowSymlinks::All,
+                )
                 .await
                 .unwrap();
             assert_eq!(inode.metadata().file_type, FileType::Regular);
+        }
+        // Remove all entries.
+        for i in 0..100 {
+            let name = format!("file_{:03}", i);
+            let inode = fs
+                .path_to_inode(
+                    Path::new(("/".to_string() + &name).as_bytes()),
+                    FollowSymlinks::All,
+                )
+                .await
+                .unwrap();
+            root_dir
+                .unlink(DirEntryName::try_from(name.as_bytes()).unwrap(), inode)
+                .await
+                .unwrap();
+        }
+        // Verify all entries are removed.
+        for i in 0..100 {
+            let name = format!("file_{:03}", i);
+            let err = fs
+                .path_to_inode(
+                    Path::new(("/".to_string() + &name).as_bytes()),
+                    FollowSymlinks::All,
+                )
+                .await
+                .unwrap_err();
+            assert!(matches!(err, Ext4Error::NotFound));
         }
     }
 }
