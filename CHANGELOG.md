@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.1
+
 - BREAKING: Require mutable dir for `Ext4::symlink` and mutable self for `Dir::link` and `Dir::unlink`.
 - Support modification of htree directories
 - Add `Inode::dtime_val` and `Inode::set_dtime_val` for handling of deleted inodes.
