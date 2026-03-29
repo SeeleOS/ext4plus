@@ -390,7 +390,12 @@ pub(crate) async fn init_directory(
     if fs.has_metadata_checksums() {
         let checksum_start = block_size.checked_sub(12).unwrap();
         write_u32le(&mut block_buf, checksum_start, 0);
-        write_u32le(&mut block_buf, checksum_start.checked_add(4).unwrap(), 12);
+        let tail_val = 12u32 | (0xDE << 24);
+        write_u32le(
+            &mut block_buf,
+            checksum_start.checked_add(4).unwrap(),
+            tail_val,
+        );
         // TODO: Cleanup
         // Update the checksum tail (stored in the last 4 bytes) if enabled.
         DirBlock {
@@ -410,6 +415,9 @@ pub(crate) async fn init_directory(
     if n != block_buf.len() {
         return Err(Ext4Error::NoSpace);
     }
+
+    dir_inode.set_links_count(1);
+    dir_inode.write(fs).await?;
 
     Ok(())
 }
@@ -527,6 +535,17 @@ impl Dir {
         let new = old.checked_add(1).ok_or(Ext4Error::Readonly)?;
         target_inode.set_links_count(new);
         target_inode.write(&self.fs).await?;
+
+        if target_inode.file_type() == FileType::Directory {
+            let mut parent_inode =
+                Inode::read(&self.fs, self.inode.index).await?;
+            let parent_old = parent_inode.links_count();
+            let parent_new =
+                parent_old.checked_add(1).ok_or(Ext4Error::Readonly)?;
+            parent_inode.set_links_count(parent_new);
+            parent_inode.write(&self.fs).await?;
+        }
+
         add_dir_entry_non_htree(
             &self.fs,
             &self.inode,
