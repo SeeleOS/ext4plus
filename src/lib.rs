@@ -961,10 +961,15 @@ impl Ext4 {
     #[maybe_async::maybe_async]
     pub(crate) async fn delete_file(
         &self,
-        inode: Inode,
+        mut inode: Inode,
     ) -> Result<(), Ext4Error> {
         let blocks = FileBlocks::new(self.clone(), &inode)?;
         blocks.free_all(self).await?;
+        inode.set_size_in_bytes(0);
+        inode.set_links_count(0);
+        inode.write(self).await?;
+        // TODO: Fix dtime handling
+        inode.zero(self).await?;
         self.free_inode(inode).await
     }
 

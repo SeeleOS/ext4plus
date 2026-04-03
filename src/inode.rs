@@ -401,6 +401,24 @@ impl Inode {
         Ok(())
     }
 
+    /// Zero out the disk at inode location
+    #[maybe_async::maybe_async]
+    pub(crate) async fn zero(&mut self, ext4: &Ext4) -> Result<(), Ext4Error> {
+        let (block_index, offset_within_block) =
+            get_inode_location(ext4, self.index)?;
+        let block_size = ext4.0.superblock.block_size().to_u64();
+        let pos = block_index
+            .checked_mul(block_size)
+            .ok_or(CorruptKind::InvalidBlockSize)?
+            .checked_add(u64::from(offset_within_block))
+            .ok_or(CorruptKind::InvalidBlockSize)?;
+        let zeros = vec![0; self.inode_data.len()];
+        // Write only the data we've saved to avoid overwriting any unread info
+        let writer = ext4.0.writer.as_ref().ok_or(Ext4Error::Readonly)?;
+        writer.write(pos, &zeros).await.map_err(Ext4Error::Io)?;
+        Ok(())
+    }
+
     /// Get the target path of a symlink inode.
     #[maybe_async::maybe_async]
     pub async fn symlink_target(
