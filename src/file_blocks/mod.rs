@@ -60,6 +60,22 @@ impl FileBlocks {
         }
     }
 
+    #[maybe_async::maybe_async]
+    pub(crate) async fn get_block_run(
+        &self,
+        block_index: FileBlockIndex,
+        max_blocks: u32,
+    ) -> Result<(FsBlockIndex, u32), Ext4Error> {
+        match self {
+            Self::ExtentTree(extent_tree) => {
+                extent_tree.get_block_run(block_index, max_blocks).await
+            }
+            Self::BlockMap(block_map) => {
+                block_map.get_block_run(block_index, max_blocks).await
+            }
+        }
+    }
+
     /// Allocate a block for the file at `block_index`,
     /// and return the index of the allocated block and the number of metadata blocks allocated.
     #[maybe_async::maybe_async]

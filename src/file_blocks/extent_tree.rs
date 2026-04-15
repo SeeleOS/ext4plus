@@ -437,6 +437,41 @@ impl ExtentTree {
     }
 
     #[maybe_async::maybe_async]
+    pub(crate) async fn get_block_run(
+        &self,
+        block_index: FileBlockIndex,
+        max_blocks: u32,
+    ) -> Result<(FsBlockIndex, u32), Ext4Error> {
+        let (prev, next) = self.find_prev_next(block_index).await?;
+
+        if let (Some(prev), Some(next)) = (prev, next) {
+            if prev == next {
+                let offset_within_extent =
+                    block_index.checked_sub(prev.block_within_file).unwrap();
+                let remaining = u32::from(prev.num_blocks)
+                    .checked_sub(offset_within_extent)
+                    .unwrap();
+                return Ok((
+                    prev.start_block
+                        .checked_add(FsBlockIndex::from(offset_within_extent))
+                        .unwrap(),
+                    core::cmp::min(remaining, max_blocks),
+                ));
+            }
+        }
+
+        let hole_blocks = match next {
+            Some(next_extent) => next_extent
+                .block_within_file
+                .checked_sub(block_index)
+                .unwrap(),
+            None => max_blocks,
+        };
+
+        Ok((0, core::cmp::min(hole_blocks, max_blocks)))
+    }
+
+    #[maybe_async::maybe_async]
     pub(crate) async fn allocate_block(
         &mut self,
         block_index: FileBlockIndex,

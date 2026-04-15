@@ -324,6 +324,36 @@ impl BlockMap {
         }
     }
 
+    #[maybe_async::maybe_async]
+    pub(crate) async fn get_block_run(
+        &self,
+        file_block_index: FileBlockIndex,
+        max_blocks: u32,
+    ) -> Result<(FsBlockIndex, u32), Ext4Error> {
+        let first_block = self.get_block(file_block_index).await?;
+        if max_blocks <= 1 {
+            return Ok((first_block, 1));
+        }
+
+        let mut run_blocks = 1u32;
+        while run_blocks < max_blocks {
+            let next_file_block = file_block_index.checked_add(run_blocks).unwrap();
+            let next_block = self.get_block(next_file_block).await?;
+
+            if first_block == 0 {
+                if next_block != 0 {
+                    break;
+                }
+            } else if next_block != first_block.checked_add(u64::from(run_blocks)).unwrap() {
+                break;
+            }
+
+            run_blocks += 1;
+        }
+
+        Ok((first_block, run_blocks))
+    }
+
     /// Set the mapping for a file block index to a filesystem block index, allocating
     /// any necessary metadata blocks. Returns the number of allocated metadata blocks.
     #[maybe_async::maybe_async]

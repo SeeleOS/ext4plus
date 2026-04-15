@@ -25,6 +25,8 @@ use core::cmp::max;
 use core::fmt::{self, Debug, Formatter};
 use core::num::NonZeroU32;
 
+const MAX_COALESCED_READ_BYTES: usize = 64 * 1024;
+
 /// An open file within an [`Ext4`] filesystem.
 pub struct File {
     fs: Ext4,
@@ -198,7 +200,7 @@ pub(crate) async fn read_at_inner(
     ext4: &Ext4,
     inode: &Inode,
     file_blocks: &FileBlocks,
-    mut buf: &mut [u8],
+    buf: &mut [u8],
     offset: u64,
 ) -> Result<usize, Ext4Error> {
     // Nothing to do if output buffer is empty.
@@ -224,54 +226,67 @@ pub(crate) async fn read_at_inner(
     //
     // If the conversion to `usize` fails, the output buffer is
     // definitely not larger than the remaining bytes to read.
-    if let Ok(bytes_remaining) = usize::try_from(bytes_remaining) {
-        if buf.len() > bytes_remaining {
-            buf = &mut buf[..bytes_remaining];
-        }
-    }
+    let len = match usize::try_from(bytes_remaining) {
+        Ok(bytes_remaining) => core::cmp::min(buf.len(), bytes_remaining),
+        Err(_) => buf.len(),
+    };
+    let buf = &mut buf[..len];
 
-    let block_size = ext4.0.superblock.block_size();
+    let block_size = ext4.0.superblock.block_size().to_usize();
+    let block_size_u64 = u64_from_usize(block_size);
+    let mut filled = 0usize;
+    let mut current_offset = offset;
 
-    // Byte offset within the current block.
-    //
-    // OK to unwrap: block size fits in a `u32`, so an offset within
-    // the block will as well.
-    let offset_within_block: u32 =
-        u32::try_from(offset % block_size.to_nz_u64()).unwrap();
-
-    // OK to unwrap: `offset_within_block` is always less than or
-    // equal to the block length.
-    //
-    // Note that if this block is at the end of the file, the block
-    // may extend past the actual number of bytes in the file. This
-    // does not matter because the output buffer's length was
-    // already capped earlier against the number of bytes remaining
-    // in the file.
-    let bytes_remaining_in_block: u32 = block_size
-        .to_u32()
-        .checked_sub(offset_within_block)
-        .unwrap();
-
-    // If the output buffer is larger than the number of bytes
-    // remaining in the block, shink the buffer.
-    if buf.len() > usize_from_u32(bytes_remaining_in_block) {
-        buf = &mut buf[..usize_from_u32(bytes_remaining_in_block)];
-    }
-
-    // Read the block data, or zeros if in a hole.
-    let block_index = file_blocks
-        .get_block(
-            FileBlockIndex::try_from(offset / block_size.to_nz_u64()).unwrap(),
-        )
-        .await?;
-    if block_index == 0 {
-        buf.fill(0);
-    } else {
-        ext4.read_from_block(block_index, offset_within_block, buf)
+    while filled < buf.len() {
+        let offset_within_block =
+            usize::try_from(current_offset % block_size_u64).unwrap();
+        let block_index = FileBlockIndex::try_from(current_offset / block_size_u64).unwrap();
+        let bytes_left = buf.len() - filled;
+        let bytes_this_block =
+            core::cmp::min(block_size.checked_sub(offset_within_block).unwrap(), bytes_left);
+        let max_additional_blocks =
+            u32::try_from((bytes_left - bytes_this_block).div_ceil(block_size))
+                .unwrap_or(u32::MAX);
+        let (first_fs_block, run_blocks) = file_blocks
+            .get_block_run(block_index, max_additional_blocks.saturating_add(1))
             .await?;
+        let mut run_len = bytes_this_block
+            .checked_add(
+                core::cmp::min(
+                    usize::try_from(run_blocks.saturating_sub(1)).unwrap_or(usize::MAX),
+                    (bytes_left - bytes_this_block) / block_size,
+                )
+                .checked_mul(block_size)
+                .unwrap(),
+            )
+            .unwrap();
+        run_len = core::cmp::min(run_len, MAX_COALESCED_READ_BYTES);
+
+        if first_fs_block == 0 {
+            buf[filled..filled + run_len].fill(0);
+            filled += run_len;
+            current_offset += u64_from_usize(run_len);
+            continue;
+        }
+
+        ext4.0
+            .reader
+            .read(
+                first_fs_block
+                    .checked_mul(ext4.0.superblock.block_size().to_u64())
+                    .ok_or(crate::error::CorruptKind::InvalidBlockSize)?
+                    .checked_add(u64_from_usize(offset_within_block))
+                    .ok_or(crate::error::CorruptKind::InvalidBlockSize)?,
+                &mut buf[filled..filled + run_len],
+            )
+            .await
+            .map_err(Ext4Error::Io)?;
+
+        filled += run_len;
+        current_offset += u64_from_usize(run_len);
     }
 
-    Ok(buf.len())
+    Ok(len)
 }
 
 /// Read from `inode` into `buf` starting at `offset`, returning how many bytes were read.
