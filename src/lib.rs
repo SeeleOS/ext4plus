@@ -560,13 +560,14 @@ impl Ext4 {
                     )
                     .await?
                 else {
+                    bg_id = bg_id.saturating_add(1);
                     continue;
                 };
                 inode_bitmap_handle.set(inode_num, true, self).await?;
                 self.update_inode_bitmap_checksum(bg_id, inode_bitmap_handle)
                     .await?;
                 bg.set_free_inodes_count(free_inodes.checked_sub(1).unwrap());
-                if self
+                let first_unused_inode = self
                     .0
                     .superblock
                     .inodes_per_block_group()
@@ -577,16 +578,8 @@ impl Ext4 {
                             block_group_num: bg_id,
                             num_unused_inodes: bg.unused_inodes_count(),
                         },
-                    )?
-                    .checked_sub(1)
-                    .ok_or(
-                        CorruptKind::BlockGroupDescriptorTooManyUnusedInodes {
-                            block_group_num: bg_id,
-                            num_unused_inodes: bg.unused_inodes_count(),
-                        },
-                    )?
-                    <= inode_num
-                {
+                    )?;
+                if inode_num >= first_unused_inode {
                     bg.set_unused_inodes_count(
                         self.0
                             .superblock
@@ -745,6 +738,7 @@ impl Ext4 {
                 let Some(block_num) =
                     block_bitmap_handle.find_first(false, .., self).await?
                 else {
+                    bg_id = bg_id.saturating_add(1);
                     continue;
                 };
                 block_bitmap_handle.set(block_num, true, self).await?;
@@ -812,6 +806,7 @@ impl Ext4 {
                     .find_first_n(num_blocks.into(), false, .., self)
                     .await?
                 else {
+                    bg_id = bg_id.saturating_add(1);
                     continue;
                 };
                 for i in 0..num_blocks.get() {
@@ -963,8 +958,13 @@ impl Ext4 {
         &self,
         mut inode: Inode,
     ) -> Result<(), Ext4Error> {
-        let blocks = FileBlocks::new(self.clone(), &inode)?;
-        blocks.free_all(self).await?;
+        let uses_inline_symlink_data = inode.file_type().is_symlink()
+            && !inode.flags().contains(InodeFlags::EXTENTS)
+            && inode.size_in_bytes() <= 60;
+        if !uses_inline_symlink_data {
+            let blocks = FileBlocks::new(self.clone(), &inode)?;
+            blocks.free_all(self).await?;
+        }
         inode.set_size_in_bytes(0);
         inode.set_links_count(0);
         inode.write(self).await?;
