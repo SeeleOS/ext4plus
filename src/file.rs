@@ -196,6 +196,7 @@ impl Debug for File {
 /// Read from `inode` into `buf` starting at `offset`, returning how many bytes were read.
 /// The number may be smaller than the length of the input buffer if the read is only partially successful (e.g., due to reaching EOF).
 #[maybe_async::maybe_async]
+#[allow(clippy::arithmetic_side_effects)]
 pub(crate) async fn read_at_inner(
     ext4: &Ext4,
     inode: &Inode,
@@ -240,10 +241,13 @@ pub(crate) async fn read_at_inner(
     while filled < buf.len() {
         let offset_within_block =
             usize::try_from(current_offset % block_size_u64).unwrap();
-        let block_index = FileBlockIndex::try_from(current_offset / block_size_u64).unwrap();
+        let block_index =
+            FileBlockIndex::try_from(current_offset / block_size_u64).unwrap();
         let bytes_left = buf.len() - filled;
-        let bytes_this_block =
-            core::cmp::min(block_size.checked_sub(offset_within_block).unwrap(), bytes_left);
+        let bytes_this_block = core::cmp::min(
+            block_size.checked_sub(offset_within_block).unwrap(),
+            bytes_left,
+        );
         let max_additional_blocks =
             u32::try_from((bytes_left - bytes_this_block).div_ceil(block_size))
                 .unwrap_or(u32::MAX);
@@ -253,7 +257,8 @@ pub(crate) async fn read_at_inner(
         let mut run_len = bytes_this_block
             .checked_add(
                 core::cmp::min(
-                    usize::try_from(run_blocks.saturating_sub(1)).unwrap_or(usize::MAX),
+                    usize::try_from(run_blocks.saturating_sub(1))
+                        .unwrap_or(usize::MAX),
                     (bytes_left - bytes_this_block) / block_size,
                 )
                 .checked_mul(block_size)

@@ -230,8 +230,9 @@ impl Ext4 {
             .map_err(Ext4Error::Io)?;
 
         let superblock = Superblock::from_bytes(&data)?;
+        let needs_recovery = superblock.needs_recovery();
 
-        if superblock.read_only() {
+        if !superblock.supports_writes() {
             writer = None;
         }
         let mut fs = Self(Arc::new(Ext4Inner {
@@ -250,8 +251,18 @@ impl Ext4 {
 
         // Load the actual journal, if present.
         let journal = Journal::load(&fs).await?;
-        // OK to unwrap: the journal is stored in an `Arc`, but we haven't cloned it yet, so we have unique access to it.
-        Arc::get_mut(&mut fs.0).unwrap().journal = journal;
+        if needs_recovery && fs.0.writer.is_some() {
+            journal.replay(&fs).await?;
+            {
+                let inner = Arc::get_mut(&mut fs.0).unwrap();
+                inner.superblock.clear_recovery();
+                inner.journal = Journal::empty();
+            }
+            fs.0.superblock.write(&fs).await?;
+        } else {
+            // OK to unwrap: the journal is stored in an `Arc`, but we haven't cloned it yet, so we have unique access to it.
+            Arc::get_mut(&mut fs.0).unwrap().journal = journal;
+        }
 
         Ok(fs)
     }
@@ -403,7 +414,39 @@ impl Ext4 {
         src: &[u8],
     ) -> Result<(), Ext4Error> {
         let block_index = self.0.journal.map_block_index(original_block_index);
+        self.write_to_block_impl(
+            block_index,
+            original_block_index,
+            offset_within_block,
+            src,
+        )
+        .await
+    }
 
+    #[maybe_async::maybe_async]
+    pub(crate) async fn write_to_block_raw(
+        &self,
+        block_index: FsBlockIndex,
+        offset_within_block: u32,
+        src: &[u8],
+    ) -> Result<(), Ext4Error> {
+        self.write_to_block_impl(
+            block_index,
+            block_index,
+            offset_within_block,
+            src,
+        )
+        .await
+    }
+
+    #[maybe_async::maybe_async]
+    async fn write_to_block_impl(
+        &self,
+        block_index: FsBlockIndex,
+        original_block_index: FsBlockIndex,
+        offset_within_block: u32,
+        src: &[u8],
+    ) -> Result<(), Ext4Error> {
         let err = || {
             Ext4Error::from(CorruptKind::BlockWrite {
                 block_index,

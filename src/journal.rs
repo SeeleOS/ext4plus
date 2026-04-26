@@ -17,6 +17,7 @@ use crate::Ext4;
 use crate::block_index::FsBlockIndex;
 use crate::error::Ext4Error;
 use crate::inode::Inode;
+use alloc::vec;
 use block_map::{BlockMap, load_block_map};
 use superblock::JournalSuperblock;
 
@@ -63,6 +64,19 @@ impl Journal {
         block_index: FsBlockIndex,
     ) -> FsBlockIndex {
         *self.block_map.get(&block_index).unwrap_or(&block_index)
+    }
+
+    #[maybe_async::maybe_async]
+    pub(crate) async fn replay(&self, fs: &Ext4) -> Result<(), Ext4Error> {
+        let block_size = fs.0.superblock.block_size().to_usize();
+        let mut block = vec![0; block_size];
+
+        for (target_block, journal_block) in &self.block_map {
+            fs.read_from_block(*journal_block, 0, &mut block).await?;
+            fs.write_to_block_raw(*target_block, 0, &block).await?;
+        }
+
+        Ok(())
     }
 }
 

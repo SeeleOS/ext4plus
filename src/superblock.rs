@@ -230,12 +230,22 @@ impl Superblock {
         })
     }
 
-    pub(crate) fn read_only(&self) -> bool {
+    pub(crate) fn needs_recovery(&self) -> bool {
         self.incompatible_features
             .contains(IncompatibleFeatures::RECOVERY)
-            || !check_read_only_compat_features(
-                self.read_only_compatible_features.bits(),
-            )
+    }
+
+    pub(crate) fn supports_writes(&self) -> bool {
+        check_read_only_compat_features(
+            self.read_only_compatible_features.bits(),
+        )
+    }
+
+    pub(crate) fn clear_recovery(&mut self) {
+        self.incompatible_features
+            .remove(IncompatibleFeatures::RECOVERY);
+        self.journal_inode = None;
+        write_u32le(&mut self.data, 0x60, self.incompatible_features.bits());
     }
 
     fn to_bytes(&self) -> [u8; Self::SIZE_IN_BYTES_ON_DISK] {
@@ -419,11 +429,11 @@ fn check_read_only_compat_features(s_feature_ro_compat: u32) -> bool {
     if actual != actual_known {
         return false;
     }
-    let disallowed_features = ReadOnlyCompatibleFeatures::BTREE_DIR
-        | ReadOnlyCompatibleFeatures::GROUP_DESCRIPTOR_CHECKSUMS
-        | ReadOnlyCompatibleFeatures::QUOTA
-        | ReadOnlyCompatibleFeatures::PROJECT_QUOTAS
-        | ReadOnlyCompatibleFeatures::BIG_ALLOC;
+    let disallowed_features =
+        ReadOnlyCompatibleFeatures::GROUP_DESCRIPTOR_CHECKSUMS
+            | ReadOnlyCompatibleFeatures::QUOTA
+            | ReadOnlyCompatibleFeatures::PROJECT_QUOTAS
+            | ReadOnlyCompatibleFeatures::BIG_ALLOC;
     let present_disallowed = actual & disallowed_features;
     if !present_disallowed.is_empty() {
         return false;

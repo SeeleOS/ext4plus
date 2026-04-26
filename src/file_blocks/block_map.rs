@@ -325,6 +325,7 @@ impl BlockMap {
     }
 
     #[maybe_async::maybe_async]
+    #[allow(clippy::arithmetic_side_effects)]
     pub(crate) async fn get_block_run(
         &self,
         file_block_index: FileBlockIndex,
@@ -337,14 +338,17 @@ impl BlockMap {
 
         let mut run_blocks = 1u32;
         while run_blocks < max_blocks {
-            let next_file_block = file_block_index.checked_add(run_blocks).unwrap();
+            let next_file_block =
+                file_block_index.checked_add(run_blocks).unwrap();
             let next_block = self.get_block(next_file_block).await?;
 
             if first_block == 0 {
                 if next_block != 0 {
                     break;
                 }
-            } else if next_block != first_block.checked_add(u64::from(run_blocks)).unwrap() {
+            } else if next_block
+                != first_block.checked_add(u64::from(run_blocks)).unwrap()
+            {
                 break;
             }
 
