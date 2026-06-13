@@ -538,11 +538,7 @@ mod tests {
 
     fn raw_superblock_data() -> Vec<u8> {
         let output = std::process::Command::new("zstd")
-            .args([
-                "--decompress",
-                "--stdout",
-                "test_data/test_disk1.bin.zst",
-            ])
+            .args(["--decompress", "--stdout", "test_data/test_disk1.bin.zst"])
             .output()
             .unwrap();
         assert!(output.status.success());

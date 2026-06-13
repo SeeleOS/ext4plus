@@ -60,6 +60,24 @@ impl FileBlocks {
             }
         }
     }
+
+    #[maybe_async::maybe_async]
+    pub(crate) async fn get_block(
+        &self,
+        block_index: FileBlockIndex,
+    ) -> Result<FsBlockIndex, Ext4Error> {
+        let (block, _) = self.get_block_run(block_index, 1).await?;
+        Ok(block)
+    }
+
+    #[maybe_async::maybe_async]
+    pub(crate) async fn free_all(&self) -> Result<(), Ext4Error> {
+        match self {
+            Self::ExtentTree(extent_tree) => extent_tree.free_all().await,
+            Self::BlockMap(block_map) => block_map.free_all().await,
+        }
+    }
+
     #[maybe_async::maybe_async]
     pub(crate) async fn write_at(
         &mut self,

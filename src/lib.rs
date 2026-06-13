@@ -164,11 +164,11 @@ use dir::Dir;
 use error::{CorruptKind, Ext4Error};
 use features::ReadOnlyCompatibleFeatures;
 use file::{File, write_at};
+use file_blocks::FileBlocks;
 use inode::{
     Inode, InodeCreationOptions, InodeFlags, InodeIndex, InodeMode,
     get_inode_block_group_location,
 };
-use iters::file_blocks::FileBlocks;
 use journal::Journal;
 use mmp::Mmp;
 use path::{Path, PathBuf};
@@ -334,9 +334,20 @@ impl Ext4 {
         Inode::read(self, root_inode_index).await
     }
 
-    /// Read data from a block.
+    /// Map a logical filesystem block to the block that should be read.
     ///
-    /// `block_index`: an absolute block within the filesystem.
+    /// If the loaded journal contains a replacement for the block, this returns
+    /// the journal block. Otherwise it returns `block_index` unchanged.
+    fn map_block_index_for_read(
+        &self,
+        block_index: FsBlockIndex,
+    ) -> FsBlockIndex {
+        self.0.journal.map_block_index(block_index)
+    }
+
+    /// Read data from a block, applying any loaded journal remapping.
+    ///
+    /// `original_block_index`: an absolute block within the filesystem.
     ///
     /// `offset_within_block`: the byte offset within the block to start
     /// reading from.
@@ -360,8 +371,42 @@ impl Ext4 {
         offset_within_block: u32,
         dst: &mut [u8],
     ) -> Result<(), Ext4Error> {
-        let block_index = self.0.journal.map_block_index(original_block_index);
+        let block_index = self.map_block_index_for_read(original_block_index);
+        self.read_from_block_impl(
+            block_index,
+            original_block_index,
+            offset_within_block,
+            dst,
+        )
+        .await
+    }
 
+    /// Read data from the exact on-disk block index without applying journal
+    /// remapping.
+    #[maybe_async::maybe_async]
+    async fn read_from_block_raw(
+        &self,
+        block_index: FsBlockIndex,
+        offset_within_block: u32,
+        dst: &mut [u8],
+    ) -> Result<(), Ext4Error> {
+        self.read_from_block_impl(
+            block_index,
+            block_index,
+            offset_within_block,
+            dst,
+        )
+        .await
+    }
+
+    #[maybe_async::maybe_async]
+    async fn read_from_block_impl(
+        &self,
+        block_index: FsBlockIndex,
+        original_block_index: FsBlockIndex,
+        offset_within_block: u32,
+        dst: &mut [u8],
+    ) -> Result<(), Ext4Error> {
         let err = || {
             Ext4Error::from(CorruptKind::BlockRead {
                 block_index,
@@ -397,7 +442,7 @@ impl Ext4 {
             return Err(err());
         }
 
-        // Read the block
+        // Read the block.
         self.0
             .reader
             .read(
@@ -413,7 +458,7 @@ impl Ext4 {
         Ok(())
     }
 
-    /// Read a whole block
+    /// Read a whole block, applying any loaded journal remapping.
     #[maybe_async::maybe_async]
     async fn read_block(
         &self,
@@ -426,18 +471,20 @@ impl Ext4 {
         Ok(block)
     }
 
-    /// Write data to a block.
+    /// Write data to the exact on-disk block index.
+    ///
+    /// Unlike [`Self::read_from_block`], this does not consult the loaded
+    /// journal overlay. Writes target the home block directly.
     #[maybe_async::maybe_async]
     async fn write_to_block(
         &self,
-        original_block_index: FsBlockIndex,
+        block_index: FsBlockIndex,
         offset_within_block: u32,
         src: &[u8],
     ) -> Result<(), Ext4Error> {
-        let block_index = self.0.journal.map_block_index(original_block_index);
         self.write_to_block_impl(
             block_index,
-            original_block_index,
+            block_index,
             offset_within_block,
             src,
         )
@@ -502,7 +549,7 @@ impl Ext4 {
             return Err(err());
         }
 
-        // Write through to underlying storage
+        // Write through to underlying storage.
         if let Some(writer) = &self.0.writer {
             writer
                 .write(
@@ -743,6 +790,22 @@ impl Ext4 {
         ))
     }
 
+    fn block_index_from_group_offset(
+        &self,
+        block_group_index: BlockGroupIndex,
+        block_offset: u32,
+    ) -> Result<FsBlockIndex, Ext4Error> {
+        u64::from(block_group_index)
+            .checked_mul(
+                NonZeroU64::from(self.0.superblock.blocks_per_group()).get(),
+            )
+            .ok_or(Ext4Error::NoSpace)?
+            .checked_add(u64::from(block_offset))
+            .ok_or(Ext4Error::NoSpace)?
+            .checked_add(u64::from(self.0.superblock.first_data_block()))
+            .ok_or(Ext4Error::NoSpace)
+    }
+
     #[expect(unused)]
     #[maybe_async::maybe_async]
     pub(crate) async fn alloc_block_num(
@@ -769,7 +832,7 @@ impl Ext4 {
         bg.write(self).await?;
         self.0.superblock.dec_free_blocks_count(1);
         self.0.superblock.write(self).await?;
-        Ok(())
+        self.clear_block(block).await
     }
 
     #[maybe_async::maybe_async]
@@ -814,20 +877,9 @@ impl Ext4 {
                 self.0.superblock.dec_free_blocks_count(1);
                 self.0.superblock.write(self).await?;
 
-                // Zero out the new block
-                let block_index = u64::from(bg_id)
-                    .checked_mul(
-                        NonZeroU64::from(self.0.superblock.blocks_per_group())
-                            .get(),
-                    )
-                    .unwrap()
-                    .checked_add(u64::from(block_num))
-                    .unwrap()
-                    .checked_add(u64::from(
-                        self.0.superblock.first_data_block(),
-                    ))
-                    .unwrap();
-
+                let block_index =
+                    self.block_index_from_group_offset(bg_id, block_num)?;
+                self.clear_block(block_index).await?;
                 return Ok(block_index);
             }
 
@@ -837,12 +889,12 @@ impl Ext4 {
         Err(Ext4Error::NoSpace)
     }
 
-    /// Tries to allocate `num_blocks` contiguous blocks.
     #[maybe_async::maybe_async]
-    pub(crate) async fn alloc_contiguous_blocks(
+    async fn alloc_contiguous_blocks_inner(
         &self,
         inode_index: InodeIndex,
         num_blocks: NonZeroU32,
+        clear: bool,
     ) -> Result<FsBlockIndex, Ext4Error> {
         let mut bg_id = (inode_index.get() - 1)
             / self.0.superblock.inodes_per_block_group();
@@ -887,21 +939,38 @@ impl Ext4 {
                     .superblock
                     .dec_free_blocks_count(u64::from(num_blocks.get()));
                 self.0.superblock.write(self).await?;
-                let block_index = (u64::from(bg_id)
-                    .checked_mul(
-                        NonZeroU64::from(self.0.superblock.blocks_per_group())
-                            .get(),
-                    )
-                    .ok_or(Ext4Error::NoSpace)?)
-                .checked_add(u64::from(block_num))
-                .ok_or(Ext4Error::NoSpace)?
-                .checked_add(u64::from(self.0.superblock.first_data_block()))
-                .ok_or(Ext4Error::NoSpace)?;
+                let block_index =
+                    self.block_index_from_group_offset(bg_id, block_num)?;
+                if clear {
+                    self.clear_blocks(block_index, num_blocks).await?;
+                }
                 return Ok(block_index);
             }
             bg_id = bg_id.saturating_add(1);
         }
         Err(Ext4Error::NoSpace)
+    }
+
+    /// Tries to allocate `num_blocks` contiguous blocks.
+    #[maybe_async::maybe_async]
+    pub(crate) async fn alloc_contiguous_blocks(
+        &self,
+        inode_index: InodeIndex,
+        num_blocks: NonZeroU32,
+    ) -> Result<FsBlockIndex, Ext4Error> {
+        self.alloc_contiguous_blocks_inner(inode_index, num_blocks, true)
+            .await
+    }
+
+    /// Tries to allocate `num_blocks` contiguous blocks without modifying their contents.
+    #[maybe_async::maybe_async]
+    pub(crate) async fn alloc_contiguous_blocks_uncleared(
+        &self,
+        inode_index: InodeIndex,
+        num_blocks: NonZeroU32,
+    ) -> Result<FsBlockIndex, Ext4Error> {
+        self.alloc_contiguous_blocks_inner(inode_index, num_blocks, false)
+            .await
     }
 
     /// Tries to allocate `num_blocks` contiguous blocks
@@ -925,7 +994,6 @@ impl Ext4 {
         Err(Ext4Error::NoSpace)
     }
 
-    #[expect(unused)]
     #[maybe_async::maybe_async]
     pub(crate) async fn clear_block(
         &self,
@@ -935,7 +1003,6 @@ impl Ext4 {
         self.write_to_block(block_index, 0, &zeroes).await
     }
 
-    #[expect(unused)]
     #[maybe_async::maybe_async]
     pub(crate) async fn clear_blocks(
         &self,
@@ -1033,16 +1100,8 @@ impl Ext4 {
             && !inode.flags().contains(InodeFlags::EXTENTS)
             && inode.size_in_bytes() <= 60;
         if !uses_inline_symlink_data {
-            let blocks = FileBlocks::new(self.clone(), &inode)?;
-            blocks.free_all(self).await?;
-            if inode.flags().contains(InodeFlags::EXTENTS) {
-                let extent_tree =
-                    file_blocks::extent_tree::ExtentTree::from_inode(
-                        &inode,
-                        self.clone(),
-                    )?;
-                extent_tree.free_metadata_blocks().await?;
-            }
+            let blocks = FileBlocks::from_inode(&inode, self.clone())?;
+            blocks.free_all().await?;
         }
         inode.set_size_in_bytes(0);
         inode.set_links_count(0);
@@ -1526,16 +1585,14 @@ impl Debug for Ext4 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::load_test_disk1_rw_no_fsck;
+    use crate::test_util::{
+        MemRw, load_compressed_filesystem_rw, load_test_disk1_rw_no_fsck,
+    };
     use test_util::load_test_disk1;
 
     fn raw_superblock_data() -> Vec<u8> {
         let output = std::process::Command::new("zstd")
-            .args([
-                "--decompress",
-                "--stdout",
-                "test_data/test_disk1.bin.zst",
-            ])
+            .args(["--decompress", "--stdout", "test_data/test_disk1.bin.zst"])
             .output()
             .unwrap();
         assert!(output.status.success());
@@ -1557,8 +1614,7 @@ mod tests {
 
         // Not enough data to read the block group descriptors.
         let mut fs_data = vec![0; 2048];
-        fs_data[1024..2048]
-            .copy_from_slice(&raw_superblock_data());
+        fs_data[1024..2048].copy_from_slice(&raw_superblock_data());
         let err = Ext4::load(Box::new(fs_data.clone())).await.unwrap_err();
         assert!(matches!(err, Ext4Error::Io(_)));
 
@@ -1578,7 +1634,8 @@ mod tests {
     async fn test_invalid_ext4_data() {
         let mut data = vec![0; 2048];
         data[1024 + 0x18..1024 + 0x1c].copy_from_slice(&99u32.to_le_bytes());
-        data[1024 + 0x38..1024 + 0x3a].copy_from_slice(&0xef53u16.to_le_bytes());
+        data[1024 + 0x38..1024 + 0x3a]
+            .copy_from_slice(&0xef53u16.to_le_bytes());
 
         let err = Ext4::load(Box::new(data)).await.unwrap_err();
         assert_eq!(err, CorruptKind::InvalidBlockSize);
@@ -1751,5 +1808,109 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(data, [5; 4]);
+    }
+
+    #[maybe_async::test(
+        feature = "sync",
+        async(not(feature = "sync"), tokio::test)
+    )]
+    async fn test_write_to_block_targets_home_block_not_journal_overlay() {
+        let (mut fs, storage) =
+            load_compressed_filesystem_rw("test_disk_4k_block_journal.bin.zst")
+                .await;
+        crate::sync::PtrPrimitive::get_mut(&mut fs.0)
+            .unwrap()
+            .writer = Some(Box::new(MemRw(storage)));
+
+        let block_index = (0..fs.0.superblock.blocks_count())
+            .find(|&block_index| {
+                fs.map_block_index_for_read(block_index) != block_index
+            })
+            .expect(
+                "expected test filesystem to contain journal remapped blocks",
+            );
+
+        let block_size = fs.0.superblock.block_size().to_usize();
+        let mut overlay_before = vec![0; block_size];
+        fs.read_from_block(block_index, 0, &mut overlay_before)
+            .await
+            .unwrap();
+
+        let mut new_home_data = overlay_before.clone();
+        new_home_data[0] ^= 0xff;
+
+        fs.write_to_block(block_index, 0, &new_home_data)
+            .await
+            .unwrap();
+
+        let mut raw_after = vec![0; block_size];
+        fs.read_from_block_raw(block_index, 0, &mut raw_after)
+            .await
+            .unwrap();
+        assert_eq!(raw_after, new_home_data);
+
+        let mut overlay_after = vec![0; block_size];
+        fs.read_from_block(block_index, 0, &mut overlay_after)
+            .await
+            .unwrap();
+        assert_eq!(overlay_after, overlay_before);
+    }
+
+    #[maybe_async::test(
+        feature = "sync",
+        async(not(feature = "sync"), tokio::test)
+    )]
+    async fn test_alloc_block_zeroes_reused_blocks() {
+        let (fs, _) =
+            load_compressed_filesystem_rw("test_disk_ext2.bin.zst").await;
+        let inode = InodeIndex::new(2).unwrap();
+        let garbage = vec![0xa5; fs.0.superblock.block_size().to_usize()];
+
+        let block = fs.alloc_block(inode).await.unwrap();
+        fs.write_to_block(block, 0, &garbage).await.unwrap();
+        fs.free_block(block).await.unwrap();
+
+        let reused_block = fs.alloc_block(inode).await.unwrap();
+        assert_eq!(reused_block, block);
+
+        let block_data = fs.read_block(reused_block).await.unwrap();
+        assert!(block_data.iter().all(|&byte| byte == 0));
+    }
+
+    #[maybe_async::test(
+        feature = "sync",
+        async(not(feature = "sync"), tokio::test)
+    )]
+    async fn test_alloc_contiguous_blocks_zeroes_reused_blocks() {
+        let (fs, _) =
+            load_compressed_filesystem_rw("test_disk_ext2.bin.zst").await;
+        let inode = InodeIndex::new(2).unwrap();
+        let num_blocks = NonZeroU32::new(2).unwrap();
+        let garbage = vec![0xa5; fs.0.superblock.block_size().to_usize()];
+
+        let start_block =
+            fs.alloc_contiguous_blocks(inode, num_blocks).await.unwrap();
+        for i in 0..num_blocks.get() {
+            fs.write_to_block(
+                start_block.checked_add(u64::from(i)).unwrap(),
+                0,
+                &garbage,
+            )
+            .await
+            .unwrap();
+        }
+        fs.free_blocks(start_block, num_blocks).await.unwrap();
+
+        let reused_start =
+            fs.alloc_contiguous_blocks(inode, num_blocks).await.unwrap();
+        assert_eq!(reused_start, start_block);
+
+        for i in 0..num_blocks.get() {
+            let block_data = fs
+                .read_block(reused_start.checked_add(u64::from(i)).unwrap())
+                .await
+                .unwrap();
+            assert!(block_data.iter().all(|&byte| byte == 0));
+        }
     }
 }
